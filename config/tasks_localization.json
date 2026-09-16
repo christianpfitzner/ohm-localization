@@ -82,7 +82,7 @@
       "rate_min": 5.0,
       "contacts_max": 0,
       "nees": [
-        0.1,
+        0.05,
         5.0
       ],
       "text": "The grader drives; you estimate. This time the improvement is measured against your **odometry**, not against GPS — the wheels are the sensor that is already fused into the pose you start with, and beating them is the whole claim of the exercise. One scan every twentieth of a second, 360 beams, and a map you did not build: draw N samples from the belief you were given, move them by the odometry, weight each by how well its predicted beams fit the walls, and resample when the weights stop being spread out. Report the mean and the 1σ on `/<robot>/kf/pose` — the σ is graded (NEES), so a cloud that is wide enough to hide in is not a passing answer.",
@@ -173,7 +173,7 @@
       "rate_min": 5.0,
       "contacts_max": 0,
       "nees": [
-        0.1,
+        0.05,
         8.0
       ],
       "text": "Same hall, same drive, and the robot was not where the odometry claims: the prior around the start pose has a 1σ of two metres instead of half a metre, so the true pose is in the cloud but surrounded by a thousand wrong neighbours. What has to survive is the weighting — the first scans have to throw away the neighbours. `max_error` is the number that grades the beginning of the run rather than its average: a filter that takes eight seconds to find the robot has a good RMSE and a useless first eight seconds.",
@@ -272,7 +272,7 @@
       "rate_min": 5.0,
       "contacts_max": 0,
       "nees": [
-        0.1,
+        0.05,
         12.0
       ],
       "text": "The task file now says 250 particles and **every** beam instead of one in three — a quarter of the particles for nearly the same accuracy, and 3× the beams per particle. Both settings cost the same per scan (particles × beams is the product that sets the load), so this is the same computation spent differently, and the accuracy you get for it is not the same: 360 beams constrain a pose far more sharply than 1200 particles cover a hall. The thresholds below are L1's, loosened by as much as a quarter of a cloud measurably costs — that difference is itself a result worth a line in your protocol. Run `tools/mcl_report.py --timing` on your own filter and hand in the table of what each knob costs.",

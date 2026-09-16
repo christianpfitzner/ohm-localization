@@ -32,7 +32,7 @@ particle pose += the reading sampled with  N(0, s + rate·√dt)
 
 Each particle gets its **own** draw. That sampling is the whole reason the cloud can widen again between
 two scans, and it is where the exercise's most instructive failure is produced: set the noise to zero and
-the particles move as one rigid body, so resampling can only shrink the cloud. Measured (`tests/test_mcl.py`
+the particles move as one rigid body, so resampling can only shrink the cloud. Measured (`test/test_mcl.py`
 asserts it): **0.274 m RMSE and NEES 749**, against 0.012 m and 0.2 for the same filter with noise — and
 it does not look broken. N_eff stays high, the reported σ falls, and the estimate simply follows the
 odometry. A filter that has convinced itself it already knows stops listening.
@@ -94,7 +94,7 @@ filter that stopped exploring.
 
 Resampling is **systematic** (one uniform random offset, then a deterministic sweep), which is the
 low-variance option and measurably so: with equal weights it keeps all N particles, where a multinomial
-draw keeps about 63 % of them and calls that a sample (`tests/test_mcl.py`).
+draw keeps about 63 % of them and calls that a sample (`test/test_mcl.py`).
 
 Injection — spawning random particles when N_eff collapses — is a *recovery* mechanism, and on a
 recording of a healthy drive it is a disaster: **0.530 m RMSE, never converged, 87 240 particles
@@ -109,7 +109,7 @@ divided by the reported variance, which should be ≈ 1 for an honest filter:
 
 | configuration | NEES | reading |
 |---|---|---|
-| L1 solution, graded | 0.35 | σ somewhat conservative (cloud σ ≈ 34 mm against 27 mm error) |
+| L1 solution, graded | 0.19 | σ conservative (cloud σ ≈ 34 mm against 15 mm error, both after `docs/verification.md` §12) |
 | 250 particles, 322 beams (L3) | 5.39 | a quarter of the particles is a quarter of the honesty budget |
 | zero motion noise | **749** | confidently wrong |
 | σ_z 0.15 with σ_sensor 0.25 (L4 done wrong) | **15–38** | reporting 5 mm around a 96 mm error |
@@ -125,7 +125,7 @@ A uniform prior over the hall is the honest version of "the robot was carried he
 does not work: `rooms` has **4432 free cells** at 25 cm, so that is a third of a particle per cell, and no
 weighting scheme can find a mode the cloud does not contain. Measured: 3.2 m and never better; 4000
 particles converges after 38 s; `arena` (5520 cells, mostly open) does not converge at 4000 either. The
-assertion is in `tests/test_mcl.py`, and the number is in the task text, because "increase the particle
+assertion is in `test/test_mcl.py`, and the number is in the task text, because "increase the particle
 count" is a different lesson from "improve the likelihood" and the lecture's kidnapped-robot section is
 about exactly this.
 
@@ -152,5 +152,7 @@ about exactly this.
   would use instead, and predict its effect in `production` and in `arena` before you measure either.
 * N_eff = 1200, `diversity()` = 14. Is the filter healthy? What would you have to change if the answer is
   no, and what number would tell you it worked?
-* With 250 particles the same hall gives 55 mm instead of 27 mm. What does the extra 28 mm consist of —
+* L3 runs 250 particles on a 53 s drive and grades 17 mm against L1's 15 mm on 34 s with 1200; the two runs
+  differ in drive *and* in budget, so the difference is not a measurement of the particle count. Halve your
+  own N on a recording (`mcl_report.py`) and ask what the extra millimetres consist of —
   fewer hypotheses, coarser resampling, or a worse posterior mean? Design one measurement that decides.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The offline half of "does this repository still do what its documentation says".
 #
-#   ./tools/check.sh              suite + task/drive check + the ICP claims            (~40 s)
+#   ./tools/check.sh              suite + task/drive check + ICP + sheet drift            (~40 s)
 #   ./tools/check.sh --live       and the four graded runs against the real grader      (~3 min)
 #   ./tools/check.sh --quick      just the test suite
 #
@@ -28,7 +28,7 @@ step() { printf '\n\033[1m▶ %s\033[0m\n' "$1"; }
 run() { if "$@"; then printf '  \033[32mok\033[0m   %s\n' "$*"; else printf '  \033[31mFAILED\033[0m %s\n' "$*"; fail=1; fi; }
 
 step "test suite (numpy alone; one test skips without SciPy)"
-run python3 -m pytest tests -q
+run python3 -m pytest test -q
 [ "$quick" = 1 ] && { [ "$fail" = 0 ] && echo -e "\nalright — the suite is green" || echo -e "\nthe suite is not green"; exit "$fail"; }
 
 step "task file: are the four drives driveable, and are their halls worth localising in"
@@ -36,6 +36,11 @@ run python3 tools/drive_check.py
 
 step "ICP: the numbers docs/icp.md quotes, recomputed"
 run python3 tools/icp_eval.py --claims
+
+step "student sheets: do docs/handout/* still say what config/tasks_localization.json says"
+# Same shape as the ICP step: the thresholds on the paper are generated, so a re-tuned task file that never
+# reached the printed sheet is a drift failure here rather than a cohort chasing an old target.
+run python3 tools/make_handout.py --check
 
 step "library imports without the simulator on the path at all"
 run env PYTHONPATH="$here" python3 -c 'import ohm_localization, ohm_localization.gridmap as g
@@ -48,6 +53,29 @@ if [ "$live" = 1 ]; then
     printf '\n── %s\n' "$t"
     ./tools/run_lab.sh grade --task "$t" --controller solution/mcl_node.py --headless || fail=1
   done
+  step "and the template: does the shipped student file still fail, and fail where the docs say"
+  # Four graded runs of `student/mcl_template.py`, compared against student/FAILURE.md. The point is not that
+  # it fails — a broken file fails too — it is that it fails on the *sensor model* while the plumbing (rate,
+  # contacts, no crash) still works, which is the difference between an exercise and a debugging trap.
+  run python3 tools/template_check.py --check
+
+  step "and the package: does it build, and does the installed layout resolve?"
+  # The graded path never needs a build, and a launch file that cannot find its own `config/` after
+  # `colcon build` is the failure this step exists for. Skips (loudly) with no colcon on PATH.
+  if command -v colcon >/dev/null 2>&1 || [ -x "$HOME/.local/bin/colcon" ]; then
+    run ./install.sh --build
+    run bash -c 'source "$PWD/install/setup.bash" && cd /tmp && python3 -c "
+from ohm_localization import paths
+import os
+root = paths.data_root()
+assert os.path.join(\"share\", \"ohm_localization\") in root, f\"not the install prefix: {root}\"
+assert os.path.isfile(paths.task_file()), paths.task_file()
+from ohm_localization.gridmap import load_hall
+print(\"  (installed layout: \" + root + \", hall \" + load_hall(\"production\").name + \")\")"'
+  else
+    printf '  \033[33mskip\033[0m   no colcon on PATH — the ROS/colcon side is unverified on this machine\n'
+  fi
+
   step "and the convention probe: is our map and beam model the simulator's? (a controller, so it grades 0/30)"
   # The probe publishes no pose, so its own grade is 0/30 by design and the launcher exits non-zero on
   # it: what this step checks is the convention line it prints, and a probe that cannot reach a session

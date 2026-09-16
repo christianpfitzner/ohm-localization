@@ -8,6 +8,10 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+# HERE too, not only ROOT: the tests do `from conftest import needs_sim`, which works when pytest is given
+# this directory (it becomes the rootdir and its conftest is importable) and stops working the moment
+# someone runs `pytest test/test_mcl.py` from a colcon workspace root. Two lines, one class of mystery.
+sys.path.insert(0, HERE)
 
 from ohm_localization import gridmap, synth                     # noqa: E402
 from ohm_localization.gridmap import (GridMap, corridor_text, load_hall,   # noqa: E402

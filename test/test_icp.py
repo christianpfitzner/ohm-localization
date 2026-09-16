@@ -140,7 +140,7 @@ def test_the_range_max_dialect_is_not_a_wall():
     shows it: the locus of points at exactly `range_max` from the sensor is a circle around the sensor,
     so a phantom wall at the horizon pins almost nothing about the position — it is a lie the geometry
     can absorb.  It still enters the cost, it still gets counted as a correspondence, and in a filter
-    that compares hypotheses over metres of hall (`tests/test_mcl.py`) the same one line costs a factor
+    that compares hypotheses over metres of hall (`test/test_mcl.py`) the same one line costs a factor
     of seventeen.
     """
     a, b, truth, _ = _pair(load_hall("arena"))

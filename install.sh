@@ -30,6 +30,13 @@ usage: ./install.sh [option]...
   --yes           actually run what --pip asks for
   --test          after checking, run tools/check.sh (offline suite, ~40 s)
   --sim-dir=PATH  where the mecanum-lab checkout is (same as MECANUM_LAB=…, default: sibling or ~/git)
+  --build         colcon build this package in place (--symlink-install), into ./build ./install ./log
+  --workspace     colcon build the whole practicum: the simulator, its interfaces, this package,
+                  and ohm_frontier if it is next door. Same three directories, one workspace.
+  --ros           with --check: also report whether a ROS 2 install and a colcon are usable at all
+
+  Building is optional. `./tools/run_lab.sh grade …` needs no colcon and no ROS at all; `ros2 launch
+  ohm_localization mcl.launch.py` needs both. After a build: source install/setup.bash.
 
   Exit: 0 ready · 2 bad option · 3 ROS asked for and unusable · 4 task file · 5 python side · 6 simulator
 TEXT
@@ -42,12 +49,111 @@ for a in "$@"; do
     --pip) mode=pip ;;
     --yes) yes=1 ;;
     --test) run_tests=1 ;;
-    --with-ros) want_ros=1 ;;
+    --with-ros|--ros) want_ros=1 ;;
+    --build) mode=build ;;
+    --workspace) mode=workspace ;;
     --sim-dir=*) sim_dir="${a#*=}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $a" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# --------------------------------------------------------------------------------- the colcon part
+# Two ways this repository is used, and only one of them needs a build: the graded path runs everything in
+# one process on the simulator's stub bus (`./tools/run_lab.sh`), and the ROS path (`ros2 launch
+# ohm_localization mcl.launch.py`) needs an installed package. Both must work, because the lecture's own
+# install script installs ROS and the laboratory's `./lab` is a colcon-built package — a localisation
+# exercise that cannot be built is an exercise that cannot be run the way the rest of the practicum is run.
+#
+# `--workspace` builds four things in one directory, in the order they depend on:
+#   mecanum_lab_interfaces   the messages (a second path on purpose: it is built first and its absence must
+#                            not stop the pure-python simulator from building on a machine without rosidl)
+#   mecanum-lab              the simulator
+#   ohm-localization         this package
+#   ohm_frontier             the navigation exercise, when it is checked out next door
+colcon_paths() {                    # $1 = self | workspace ; $2 = ifaces | python
+  local list=("$here")
+  if [ "$1" = workspace ]; then
+    [ -n "$sim_dir" ] || sim_dir="$(PYTHONPATH="$here" python3 -c 'from ohm_localization.gridmap import mecanum_lab_dir; print(mecanum_lab_dir())' 2>/dev/null)"
+    if [ -n "$sim_dir" ]; then
+      list=("$sim_dir" "${list[@]}")
+      if [ "${2:-python}" = ifaces ] && [ -d "$sim_dir/interfaces/mecanum_lab_interfaces" ]; then
+        list=("$sim_dir/interfaces/mecanum_lab_interfaces")
+      fi
+    fi
+    if [ "${2:-python}" != ifaces ]; then
+      for neighbour in "$here/../ohm-nav-exploration/ohm_frontier" "$HOME/git/ohm-nav-exploration/ohm_frontier"; do
+        # resolved and de-duplicated: when the repo lives under ~/git the two candidates are the same
+        # directory through different spellings, and colcon listing a package twice is a warning a
+        # student has to read every time for no information at all.
+        [ -f "$neighbour/package.xml" ] || continue
+        neighbour="$(readlink -f "$neighbour")"
+        local seen=0 other
+        for other in "${list[@]}"; do [ "$(readlink -f "$other")" = "$neighbour" ] && seen=1; done
+        [ "$seen" = 0 ] && list=("${list[@]}" "$neighbour")
+      done
+    fi
+  fi
+  printf '%s\n' "${list[@]}"
+}
+
+colcon_pass() {                     # $1 = self | workspace | ifaces
+  local paths=(); while IFS= read -r line; do paths+=("$line"); done < <(colcon_paths "$2" "$1")
+  echo "  colcon build --paths ${paths[*]}"
+  colcon build --symlink-install --paths "${paths[@]}"
+}
+
+do_build() {
+  local setup=""
+  command -v colcon >/dev/null 2>&1 || command -v colcon >/dev/null 2>&1 || {
+    bad "colcon not on PATH (sudo apt install python3-colcon-common-extensions, or ~/.local/bin/colcon)"
+    last 3; return 1; }
+  set +u
+  for f in "${ROS_SETUP:-}" "/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash" /opt/ros/jazzy/setup.bash \
+           /opt/ros/kilted/setup.bash /opt/ros/humble/setup.bash; do
+    if [ -n "$f" ] && [ -f "$f" ]; then setup="$f"; break; fi
+  done
+  set -u
+  if [ -z "$setup" ]; then
+    bad "no ROS 2 setup.bash to source (looked in \$ROS_SETUP, /opt/ros/\$ROS_DISTRO, jazzy, kilted, humble)"
+    last 3; return 1
+  fi
+  echo "building with $setup"
+  echo "------------------------------------------------------------------"
+  set +u
+  # shellcheck disable=SC1090
+  source "$setup" || { bad "sourcing $setup failed"; last 3; return 1; }
+  set -u
+
+  # The message package goes through a build of its own, the way the simulator's own install.sh does it.
+  # One colcon invocation over all four paths is wrong twice over: `mecanum_lab_interfaces` needs
+  # `rosidl_default_generators` (absent from a ros-base install), and when it fails in a shared invocation
+  # colcon aborts the packages behind it — measured here, where a sandbox with a partial /opt/ros built
+  # *nothing* until the interfaces went into a pass of their own. The simulator itself is pure python and
+  # does not need the messages to be built to run its stub-bus mode, so the second pass must happen either way.
+  local status=0
+  if [ "$1" = workspace ]; then
+    echo "pass 1/2: the message package (may fail on a partial ROS install; the lab does not need it)"
+    if colcon_pass ifaces workspace; then
+      ok "mecanum_lab_interfaces built"
+    else
+      warn "interfaces not built (needs rosidl_default_generators, absent from a ros-base install). That is"
+      echo "           survivable: every graded task in this repository runs on the stub bus without any"
+      echo "           message package at all — only the RViz/nav2 side of a ROS run cares about it."
+    fi
+    echo "pass 2/2: the python packages"
+    colcon_pass self workspace || status=1
+  else
+    colcon_pass self self || status=1
+  fi
+  if [ "$status" = 0 ]; then
+    ok "colcon build finished — source $here/install/setup.bash, then: ros2 launch ohm_localization mcl.launch.py"
+    return 0
+  fi
+  bad "colcon build failed — the report is in ./log/latest_log; a package that cannot find rosidl or"
+  echo "           nav_msgs is usually a partial ROS install (ros-base instead of desktop), not this repo"
+  last 3; return 1
+}
 
 problems=0
 ok()   { printf '  \033[32mok\033[0m      %s\n' "$1"; }
@@ -149,9 +255,18 @@ if [ "$want_ros" = 1 ] || [ -n "${ROS_DISTRO:-}" ] || ls /opt/ros >/dev/null 2>&
          which is what the exercise is designed around; real DDS is a bonus, not a requirement"; fi
 fi
 
+# ---------------------------------------------------------------------------- build, when it was asked for
+if [ "$mode" = build ] || [ "$mode" = workspace ]; then
+  echo "------------------------------------------------------------------"
+  build_status=0
+  do_build "$mode" || build_status=$problems
+  [ "$run_tests" = 1 ] && [ "$problems" = 0 ] && ./tools/check.sh
+  exit "$problems"
+fi
+
 echo "------------------------------------------------------------------"
 if [ "$problems" = 0 ]; then
-  echo "ready. The two commands worth running first:"
+  echo "ready. The three commands worth running first:"
   echo "    ./tools/check.sh                                    # suite + task check + ICP claims (~40 s)"
   echo "    ./tools/run_lab.sh grade --task mcl_production \\
     --controller solution/mcl_node.py --headless   # the real grader, ~36 s, expect PASS 30/30"

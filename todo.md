@@ -1,110 +1,88 @@
-# todo
+# Status of the open items
 
-What is left, in the order that makes the exercise teachable rather than the order that makes it look
-finished. Items 1 and 2 block offering this as a laboratory; 3 onward are growth.
+Everything in the first version of this file is implemented, and the second list is what is genuinely left.
+Both lists carry the measurement or the file that settles each item, because a todo list whose entries are
+closed by intention rather than by evidence is a list of wishes.
 
-## 1. `student/` templates — and the proof that they do **not** pass
+## Done since the last version of this file
 
-Nothing here has been shown to be *doable* in 180 minutes, only that it is solvable: `solution/mcl_node.py`
-is a reference, not a handout. The templates must be generated from it (`tools/make_template.py`, a
-`STUDENT`/`SOLUTION` split of the same file, so the docstrings and the reasoning stay and the bodies
-disappear) and then **graded**: a template that passes L1 is a template that teaches nothing, and L1's
-thresholds are loose enough to pass a shipped-working `update()` unchanged.
+### The package: `colcon build` in a workspace — the reason this round exists
+* `package.xml`, `setup.py`, `setup.cfg`, `resource/ohm_localization`: an `ament_python` package named
+  `ohm_localization`, installed as `share/ohm_localization/{config,launch,solution,student,docs}` with four
+  console scripts. `./install.sh --build` builds it in place (1.0 s), `./install.sh --workspace` builds
+  interfaces → `mecanum_lab` + `ohm_localization` + `ohm_frontier` (3 packages, 1.5 s), with the messages in a
+  pass of their own so that a partial ROS install cannot abort both exercises behind it. Measured in
+  `docs/verification.md` §11.
+* `ohm_localization/paths.py` answers "where is my data" in both layouts, and `gridmap.load_hall` asks the
+  simulator for its own hall text (`mecanum_lab.types.data_root`) instead of guessing a checkout — an
+  *installed* simulator used to mean "no such world 'production'". Verified from `/tmp` with a sourced
+  workspace and `HOME` moved away: all six halls load.
+* `launch/mcl.launch.py`, following the simulator's `kf.launch.py` idiom (sim + controller as two
+  `ExecuteProcess`, `headless:=`, `--set` overrides, rviz via `mecanum_lab.rviz_view`), plus the graded-over-ROS
+  caveat in its own docstring and a `LogInfo` at runtime when `grade:=` is used anyway.
+* `ohm_localization/lab.py` — `./lab` with our task file, reachable as `ros2 run ohm_localization ohm-lab` and
+  used by both the shell launcher and the launch file, so the task-file surgery happens in one place.
+* `test/test_packaging.py`: the installed branch tested against a **fake prefix**, the build tree refused as a
+  "checkout", entry points resolved to callables, launch arguments declared-vs-read, `--set` paths checked
+  against the simulator's config, the docstring's `…:=` examples checked against the declarations, and a real
+  `LaunchDescription` built where `launch_ros` exists (skips with that reason here).
 
-The check to add alongside it, once the templates exist:
+### Map as a ROS message
+* `gridmap.occupancy_grid()` / `gridmap.hall_from_occupancy_grid()` (dict in the middle, no `nav_msgs` needed
+  to test the geometry), `map_server_node.py` publishing a latched `/map`. Round trip exact in four halls;
+  origin, row order, unknown-vs-wall and truncation all asserted in `test/test_occupancy_grid.py`.
 
-```
-./tools/run_lab.sh grade --task mcl_production --controller student/mcl_template.py --headless   # must FAIL
-```
+### The student side
+* `student/mcl_template.py`: everything given except the sensor model, and it **fails on purpose**.
+* `tools/template_check.py --record/--check` → `student/FAILURE.md`: which criteria it misses, per task, with
+  the numbers. `--check` is in `tools/check.sh --live`.
+* `docs/handout/exercises.pdf` (`tools/make_handout.py`), 8 pages, generated from the task file, drift-checked.
 
-with the failure recorded per task (which criterion, and how far off) — because "the template fails" is
-useless unless it fails on *the thing the task is about*: L1 should fail on accuracy with an empty
-likelihood, L3 on `rate` or accuracy at 250 particles, L4 on NEES. A template that fails on a crash is a
-template with a syntax error, not an exercise.
+### Two real bugs this round found, and what they cost
+* A step that does not translate has no bearing: the rotation noise was driven by `atan2` of the odometry's
+  own jitter, so a standing or spinning robot was charged 0.08 rad of heading noise per step. σ_θ after 10 s of
+  standing: 1.69 rad → 0.57 rad (floor 0.28). The four graded tasks improved to 15/15/17/35 mm and **two NEES
+  floors had to be widened** because a correct answer was 1.8× from failing. `docs/verification.md` §12.
+* ICP odometry chained the transform in the wrong direction: exact truth deltas integrated 4.9 m away from the
+  truth they came from. Now controlled by a test before any ICP number is believed. §13.
 
-## 2. The ROS 2 deployment (the empty `launch/` and `runs/` directories are the sign of it)
+### Also
+* `icp_odom_node.py` (ICP as odometry, with the bias measurement that explains its drift), `mcl_report.py
+  --compare`, `tools/icp_eval.py --basin2d` (ASCII basins of attraction), 98 tests, README rewritten as
+  package documentation with a Quickstart, and `docs/verification.md` up to §14.
 
-Everything measured so far ran on the in-process stub bus, which is by design — but the lecture is a ROS
-lecture, and the Jazzy question below cannot be settled on a stub.
+## What is left, and why it is not here
 
-* `package.xml` + `setup.py` (ament_python), so `ohm_localization`, `solution/` and `launch/` are
-  installable and `ros2 launch` can find them; `rosdep`-clean with `numpy` only.
-* `launch/mcl.launch.py` — the simulator's own node plus this one, `robot:=alice`, `task:=mcl_production`,
-  `no_echo:=` exposed (it is a lesson, not a flag), and `gui:=true` for the `run` form.
-* **Re-grade the four tasks over real DDS** (`MECANUM_ROS=0`). The `rate_min: 5` thresholds against a
-  measured 30–40 Hz have plenty of margin for it, but "plenty of margin" is not a measurement: this is the
-  first thing to do on a machine where the ROS environment is the point of the afternoon.
-* `runs/` is where the `--log`/`--json` output of a session should land, named `<task>-<date>.json`, so the
-  protocol citations point at a file. Then `.gitignore` it.
+* **`ros2 launch … mcl.launch.py` has never been run.** This sandbox has no `ros2` CLI, no `launch_ros` and no
+  `nav_msgs`, so the launch file is verified by parsing and by building its description up to the ROS-specific
+  parts, and the entry points resolve. On a machine with a desktop ROS: run it, then `ros2 topic hz /alice/kf/pose`
+  (expect ≥ 5 Hz) and `ros2 topic echo /map --once`. Anything that fails there is a real finding for
+  `docs/verification.md` §11, which is written to receive it.
+* **Grading over DDS is documented as broken, not measured as broken here.** The simulator says a KF grade
+  taken over ROS scores `rate of kf/pose 0.0`; that number is *theirs*. `MECANUM_ROS=0 ./tools/run_lab.sh
+  grade …` on a full install is the one command that turns "the simulator documents this" into "we measured
+  it", and it should be recorded rather than quoted from the other repository.
+* **`rosidl` interfaces build:** fails in this sandbox (`rosidl_default_generators` absent), tolerated by
+  design, and `--workspace` prints why. On a full desktop it should build; nobody has seen it build here.
+* **L5 (ICP odometry as a graded task): deliberately not done.** The measured ceiling — 0.91–1.76 m over the
+  graded drive against 0.07–0.18 m of wheel odometry — is *worse than the baseline the grader compares
+  against*, so every threshold on it would grade the choice of method and not the quality of an implementation.
+  It is a node, a viva question with numbers, and `docs/icp.md` §7 instead. If it ever becomes a task, it needs
+  a different baseline (a GPS-denied drive, or `improvement` against a *deliberately crippled* odometry), and
+  the ceiling has to be measured before the threshold is written — that order, always.
+* **The 180-minute format is untested with humans.** Which of the four tasks a group actually finishes, and
+  whether the printed sheet is fillable in the time, is the largest unknown left, and no measurement in this
+  repository can substitute for one group sitting down with it.
+* **ROS 2 distro pin is still a decision nobody has made.** LAB-CONCEPT says Jazzy, the simulator's docs say
+  Kilted; `install.sh` sources whatever it finds and reports it. Harmless until a group's RViz behaves
+  differently from another's.
 
-## 3. L5 (extra credit): ICP as the sensor, not as the exercise
+## Smaller things, if there is time
 
-The ICP material is complete as a measurement suite (`tools/icp_eval.py`, `docs/icp.md`) and absent as a
-task. The task that would be worth building is **scan-matching odometry on a chassis whose wheels are
-worse than L1's** (`odom.geometry.scale_xy` ≈ 1.10, which is a wheel radius that is wrong, and
-measurable: L1's 1.03 already gives 187 mm over the graded drive). The student fuses ICP's relative pose
-between successive scans into the odometry and the improvement column does the rest of the grading.
-
-**Measure the ceiling before writing the threshold** — that is the rule this repository earned twice
-(`verification.md` §8 item 11): the first L4 was unearnable against a 6 mm odometry, and the first arena
-task had a ceiling of 1.12×. Expect the ICP odometry to be limited by the ~50 ms between scans at
-0.3 m/s (1.5 cm of motion per pair, against a 6 mm median ICP error) and by the 10/12 convergence rate, and
-set `improvement_min` from a measured run rather than from optimism.
-
-Second thing worth a task, and cheap to build on what exists: **the degeneracy hunt.** Hand two halls —
-`production` and a `corridor_text` hall dropped into the simulator's `worlds/` — and grade on the σ-to-error
-ratio rather than on accuracy. It is the one ICP lesson that a grader can check without an opinion.
-
-## 4. Three things the simulator would have to offer (ask, don't fork)
-
-All three would improve this exercise and none is ours to implement in someone else's repository:
-
-* **An `OccupancyGrid` on `/map`.** Today `GridMap` parses `worlds/<name>.txt` through
-  `mecanum_lab.worlds`, which is fine and honest, but it means the students never meet the ROS map message
-  that every real localisation stack is built around, and `worlds/*.txt` is the only "map" the simulator
-  publishes anything about (`/sim/world` carries a wall *count*). With a `/map`, `GridMap.from_occupancy_grid`
-  becomes an exercise in itself — and the resolution/reflection questions in `gridmap.py` get to be
-  discovered by students rather than answered for them.
-* **A teleport/kidnap service.** A genuine global-localisation task needs the robot to be moved; today the
-  nearest thing is L2's 2 m prior, which is the same *computation* but not the same failure, and the
-  measurement that shows it (uniform prior, 1200 particles, 3.2 m and never better) is done on a synthetic
-  drive rather than on a live kidnapping.
-* **Jazzy or Kilted.** `intelligent-robotics/praktikum/LAB-CONCEPT.md` pins the course to Jazzy; the
-  simulator's docs say Kilted; both are installed here and the stub path uses neither. Somebody teaching
-  the course has to decide, and the decision belongs in one of the two documents rather than in a footnote
-  of mine.
-
-## 5. Holes in the checking, that I can see and have not closed
-
-* **A test that a recording is a recording of what it claims.** `verification.md` §8 item 3 is a map that was
-  written with `"#"` between the rows and replayed as a hall twice as wide as reality; the tools now print the
-  grid's cell count, and the right fix is an assertion in the loader (`len(row) == hall.size[0]/cell` and the
-  row count likewise) plus a `needs_sim` test that records a couple of scans and compares the embedded grid to
-  `load_hall(...)`. Cheap, and it is the bug class that produced two wrong conclusions in one day.
-* **`MclParams.default_dt`** (0.05 s) is used by every bare-triple `predict_odometry` call, i.e. by all of the
-  tests and by any node that forgets the stamp. A test asserting the *node's* effective dt against the
-  recording's would catch a future refactor that drops the stamps — the failure it protects against is
-  §8 item 5, worth 6× in error.
-* **The ICP covariance is checked for consistency, not against a Monte-Carlo ensemble.** `tests/test_icp.py`
-  checks the σ against the error in a couple of geometries, which is the right shape of check; a proper
-  coverage test (does 1σ contain the truth 68 % of the time over 200 noise draws) is a 30-line script and the
-  only thing that would let `docs/icp.md` say "the σ is right" instead of "the σ is honest in these
-  geometries".
-* **Run-to-run spread on L3 is not characterised.** One graded run measures 55 mm against a 60 mm ceiling; the
-  spread across repeats looked like the third digit, but that was on one machine at one load. On the
-  slowest laptop in the room the filter may be starved of updates rather than wrong, and if a cohort misses
-  L3 that way, the fix is `timeout`/`warmup` or `rate_min`, not the accuracy limit — see
-  `verification.md` §7 and §9.
-* **`tools/mcl_report.py` has no way to compare two runs side by side** (`--compare a.json b.json`, one line
-  each: what changed, what it cost). Every question in the protocol is a comparison, so the tool should speak
-  the language.
-* **The ICP basin is swept along x only.** A 2-D grid over (Δx, Δθ) would show the rotational basin, which is
-  the one that matters for a scan-matching odometry; ASCII heat map, no matplotlib (there is none here).
-
-## 6. Courseware
-
-The sheets in `docs/exercises.md` are the handout, generated by hand from `config/tasks_localization.json`.
-Two things to fix before printing: the simulator's LaTeX handout machinery reads *its* `config/tasks.json`,
-so our file needs either its own include or a small pandoc step (the text/checks/hints are already structured
-JSON, so the LaTeX is a template away); and the L3/L4 protocol tables want to be actual empty tables with
-column headings, because students fill in numbers under headings rather than under prose.
+* `map_server` publishes no `/map_metadata` and no `map_server` *service*, so `nav2`'s own tools will not
+  recognise it as a map server. Deliberate: the topic is for RViz and for a group's own node, and the nav2
+  contract is the next exercise's problem.
+* `icp_eval.py --integrate` is currently `python3 -c` against a recording; the numbers are pinned by
+  `test/test_icp_odometry.py`, so this is convenience only.
+* `docs/*` are English with German task titles quoted from the task file; the handout inherits whichever the
+  task file holds. A German handout would be one flag in `make_handout.py` and needs the task file to carry both.

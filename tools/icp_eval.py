@@ -4,6 +4,7 @@
     python3 tools/icp_eval.py                      # point-to-point vs point-to-line on real pairs
     python3 tools/icp_eval.py --sweep-noise        # and for four different beam noises
     python3 tools/icp_eval.py --basin              # how wrong the starting guess is allowed to be
+    python3 tools/icp_eval.py --basin2d            # the same basin in (dx, dθ): one heat map per mode
     python3 tools/icp_eval.py --degenerate         # a bare corridor, and a corridor with repeating posts
     python3 tools/icp_eval.py --claims             # recompute every number docs/icp.md quotes
     python3 tools/icp_eval.py --recorded /tmp/prod.jsonl
@@ -154,6 +155,89 @@ def basin(hall, triples, errors=(0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0)):
     return {"errors": list(errors), **rows}
 
 
+BASIN_DX = (0.0, 0.25, 0.5, 1.0, 2.0, 3.0)      # m,   along the estimate's own x axis
+BASIN_DTH = (0.0, 2.0, 5.0, 10.0, 20.0)         # deg, about the estimate's own z axis
+BASIN_LIMIT = 0.1                # m: above this the median result is wrong, however it settled
+BANDS = ((0.02, "."), (0.10, ":"), (0.50, "+"), (float("inf"), "#"))
+
+
+def _band(v: float) -> str:
+    """One character per cell, so a 6 × 5 sweep is readable at a glance on a terminal."""
+    return next(ch for limit, ch in BANDS if v < limit)
+
+
+def basin2d(hall, triples, dxs=BASIN_DX, dths_deg=BASIN_DTH):
+    """The basin as a 2-D map: how wrong the guess may be in **translation and rotation together**.
+
+    Two things make this more than the one-axis `--basin` table, and both are why it is worth another
+    6 × 5 sweep.  The first is the guess itself: here it is `T_truth ∘ (dx, 0, dθ)`, i.e. the truth with
+    a stated error composed onto it, so a cell says exactly what its axis claims — how far off the
+    starting guess was, in the guess's own frame.  `--basin` instead starts from the *identity*, which is
+    a different and also useful question: what happens when the odometry claims the robot never moved.
+    Those two are not comparable and the labels say which is which.
+
+    The second is coupling.  A rotation error grows into a translation error with distance (a 5° heading
+    mistake is 35 cm at 4 m), so the shape of the map — where the '.' region tilts over into ':' and then
+    '#' — is the actual content.  Read a single axis on its own and a method can look forgiving in a hall
+    where the walls are close enough that a wrong heading does not have room to become a large offset.
+    """
+    print(f"\nbasin of attraction, 2-D — the guess is `truth ∘ (dx, 0, dθ)`, so a cell is exactly how "
+          f"wrong\nthe guess was; cell = median |Δt| of the result over {len(triples)} pairs in "
+          f"{GridMap(hall)}")
+    print(f"legend:  " + "   ".join(f"'{ch}' < {limit * 1000:.0f} mm" if limit < 1 else
+                                    f"'{ch}' < {limit:.0f} m"
+                                    for limit, ch in BANDS[:-1])
+          + f"   '{BANDS[-1][1]}' ≥ 0.5 m   (a cell above {BASIN_LIMIT:.2f} m counts as lost)")
+    # The pairs' own baseline is what turns a heading error into a displacement error, so the map is
+    # read with it in hand rather than assumed: 5° of wrong heading is 9 cm at 1 m and 35 cm at 4 m.
+    median_motion = float(np.median([np.linalg.norm(I.triple_of(T)[0:2]) for _, _, T, _ in triples]))
+    out = {}
+    for mode in ("point", "line"):
+        rows = []
+        for dth in dths_deg:
+            row = []
+            for dx in dxs:
+                errs = []
+                for sa, sb, T_truth, _ in triples:
+                    res = I.register_scans(sa, sb, stride=4, mode=mode,
+                                           T_guess=T_truth @ I.se2(dx, 0.0, math.radians(dth)))
+                    errs.append(I.error_between(res.T, T_truth)[0])
+                row.append(float(np.median(errs)))
+            rows.append(row)
+        print(f"\n  {'point-to-point' if mode == 'point' else 'point-to-line'}")
+        print("              dx →  " + " ".join(f"{d:6.2f}" for d in dxs) + "   m")
+        for dth, row in zip(dths_deg, rows):
+            print(f"    dθ {dth:5.1f}°     " + "  ".join(f"{_band(v):>5s}" for v in row)
+                  + "      " + " ".join(f"{v * 1000:5.0f}" for v in row) + "  mm")
+        def reach(row):
+            """How far along x this row still gets a usable answer — one number per dθ."""
+            return max([d for d, v in zip(dxs, row) if v <= BASIN_LIMIT], default=0.0)
+
+        def first_lost(row):
+            return next((d for d, v in zip(dxs, row) if v > BASIN_LIMIT), None)
+
+        col = [rows[i][0] for i in range(len(dths_deg))]
+        lost_dth = next((d for d, v in zip(dths_deg, col) if v > BASIN_LIMIT), None)
+        held_dth = [d for d, v in zip(dths_deg, col) if v <= BASIN_LIMIT]
+        straight, narrow = reach(rows[0]), min(reach(r) for r in rows)
+        lever = median_motion * math.sin(math.radians(max(dths_deg)))
+        coupling = (f"adding {max(dths_deg):.0f}° of heading error shrinks the usable dx from "
+                    f"{straight:.2f} m to {narrow:.2f} m" if narrow < straight else
+                    f"nothing in this sweep coupled: no (dx, dθ) cell was lost that the same dx with "
+                    f"dθ = 0 survived, and the arithmetic says why — the pairs are "
+                    f"{median_motion:.2f} m apart, so {max(dths_deg):.0f}° of heading error is worth "
+                    f"only {lever:.2f} m of offset at the far pose. Ask again with a longer baseline")
+        print(f"    → {mode}: usable up to {straight:.2f} m of translation error"
+              f"{f' (lost by {first_lost(rows[0]):.2f} m)' if first_lost(rows[0]) is not None else ''}"
+              f" and up to {max(held_dth, default=0):.0f}° of heading error"
+              f"{f' (lost by {lost_dth:.0f}°)' if lost_dth is not None else ' (nothing in the sweep lost it)'}.  "
+              f"{coupling}.")
+        out[mode] = {"dths_deg": list(dths_deg), "dxs": list(dxs), "median_error_m": rows,
+                     "basin_dx_m": straight, "basin_dx_with_yaw_m": narrow,
+                     "basin_dth_deg": max(held_dth, default=0)}
+    return out
+
+
 def degenerate(noise=0.02):
     """The two geometries the simulator's halls cannot provide, and what each does to the answer."""
     out = {}
@@ -206,7 +290,7 @@ def claims(args):
     checks = [
         ("point-to-line is ≥ 4× better in translation", p["trans"] / max(l["trans"], 1e-12),
          lambda v: v >= 4.0),
-        # 2× in rotation, not the 263× the single pair in `tests/test_icp.py` shows.  The rotation
+        # 2× in rotation, not the 263× the single pair in `test/test_icp.py` shows.  The rotation
         # advantage of point-to-line is real but pair-dependent — it is largest where the motion has a
         # lever arm against a long wall — so a claim printed as a median has to be a median's number.
         ("point-to-line is ≥ 2× better in rotation (median over pairs)",
@@ -250,6 +334,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=17)
     ap.add_argument("--sweep-noise", action="store_true", help="5/20/50/150 mm, not one value")
     ap.add_argument("--basin", action="store_true")
+    ap.add_argument("--basin2d", action="store_true",
+                    help="the 6 × 5 (dx, dθ) heat map of the basin, one map per mode")
     ap.add_argument("--degenerate", action="store_true")
     ap.add_argument("--claims", action="store_true")
     ap.add_argument("--recorded", help="a tools/record_scans.py JSONL instead of synthetic pairs")
@@ -286,6 +372,12 @@ def main(argv=None):
 
     if args.degenerate:
         out["degenerate"] = degenerate(args.noise)
+    if args.basin2d:
+        if args.recorded:
+            out["basin2d"] = basin2d(hall, triples)
+        else:
+            out["basin2d"] = basin2d(hall, synthetic_triples(hall, args.pairs, noise=args.noise,
+                                                             seed=args.seed))
     if args.json:
         with open(args.json, "w") as fh:
             json.dump(out, fh, indent=1, default=str)

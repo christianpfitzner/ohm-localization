@@ -1,6 +1,6 @@
 """A synthetic 2D LIDAR and a synthetic drive, so the algorithms can be tested without a simulator.
 
-`tests/` and `tools/mcl_offline.py` need scans.  Asking the simulator for them means a simulator, a
+`test/` and `tools/mcl_offline.py` need scans.  Asking the simulator for them means a simulator, a
 clock and a robot; asking for them here means NumPy and a fixed seed, which is what lets the same
 test run on a laptop, in CI, and 200 times a second.  The ray cast is therefore a real slab test
 against the wall rectangles of `gridmap.py`, not a toy: the same rectangles the simulator casts its
@@ -8,7 +8,7 @@ beams against.
 
 That is a second implementation of something that already exists, and a second implementation of a
 sensor is exactly the kind of thing that quietly disagrees with the first one.  So
-`tests/test_synth.py` compares this caster against `mecanum_lab.sensors.Lidar` beam by beam on every
+`test/test_synth.py` compares this caster against `mecanum_lab.sensors.Lidar` beam by beam on every
 world in the simulator, with the noise switched off on both sides, and skips nothing when the
 simulator is present.  If the two ever part company, the offline tests stop being evidence.
 
@@ -232,7 +232,7 @@ def random_pose(grid, rng, margin: float = 0.6, clearance: float = 0.0) -> tuple
     """A pose on free floor, `margin` inside the hall's extents and `clearance` away from any wall.
 
     Needed by the tests, by `tools/icp_eval.py` and by anything that wants a scan pair, and it is in
-    the library rather than in `tests/conftest.py` for a reason: a tool that imports its fixtures from
+    the library rather than in `test/conftest.py` for a reason: a tool that imports its fixtures from
     the test suite cannot be run by a student, and the first version of this lived in conftest and had
     to be copied, which is how the copy drifted.
 

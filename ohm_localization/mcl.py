@@ -31,6 +31,7 @@ cannot tell is being tested on a dialect, not on a map.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field, asdict
 
 import numpy as np
@@ -115,7 +116,8 @@ class MonteCarloLocaliser:
         rot2 = wrap(t - pt - rot1)
         return rot1, trans, rot2
 
-    def predict(self, rot1: float, trans: float, rot2: float, dt: float = 0.05) -> None:
+    def predict(self, rot1: float, trans: float, rot2: float, dt: float = 0.05,
+                turn: float | None = None) -> None:
         """One motion step for all particles: the same odometry reading, sampled differently.
 
         `dt` is how much time this step covers, and it is an argument because the noise floor is a
@@ -140,9 +142,33 @@ class MonteCarloLocaliser:
         p = self.p
         floor_t = p.noise_rate_theta * math.sqrt(max(dt, 0.0))
         floor_xy = p.noise_rate_xy * math.sqrt(max(dt, 0.0))
-        s1 = math.hypot(p.alpha1 * abs(rot1) + p.alpha2 * trans, 0.0) + floor_t
-        s2 = p.alpha2 * trans + p.alpha1 * (abs(rot1) + abs(rot2)) + floor_xy
-        s3 = math.hypot(p.alpha3 * abs(rot2) + p.alpha2 * trans, 0.0) + floor_t
+        # `turn`, when the caller supplies it, is the heading change the step *performed*:
+        # wrap(theta_new - theta_old), measurable at any translation. The rotation noise is proportional to
+        # rot1 and rot2, and `delta_from_odometry` takes rot1 from atan2(dy, dx) — the bearing of the step —
+        # which is undefined once there is no step. A robot standing still, or spinning on the spot, moves
+        # per step by the odometry's own jitter, whose bearing is a uniform random angle: rot1 then comes out
+        # near ±π every step and rot2 = turn - rot1 near ∓π, so the noise grows by alpha·π per *stationary*
+        # step: with the simulator's 1 cm odometry jitter the median |rot1| of a standing step is 1.61 rad,
+        # which at alpha = 0.05 claims 0.080 rad of rotation noise per step for a robot that is not turning.
+        # Measured over 10 s of standing (200 steps, 1200 particles): σ_x 1.93 m and σ_θ 1.69 rad without the
+        # cap, 0.52 m and 0.57 rad with it, where the model's own noise floor for ten seconds is 0.14 m and
+        # 0.28 rad. The heading is independent of which way the robot faces, so this is not an artefact of a
+        # particular theta. On the graded SPIDER drive, which spends seconds turning on the spot, the filter
+        # survives the uncapped version only because the sensor model re-converges afterwards; masked is not
+        # the same as absent. Even capped, 10 s of standing spreads the position 3.7× further than
+        # rate·√10, because the heading random walk rotates each subsequent step: the floors are stated as
+        # rates so that the *topic rate* cannot change the physics, they are not an upper bound on anything.
+        #
+        # Hence: a step may not claim more rotation noise than the rotation it demonstrably did. Straight
+        # legs and arcs are untouched (there |rot1| + |rot2| is already ≈ |turn|, so the cap never binds); a
+        # strafing step, which the decomposition draws as +45°/−45° while the robot turns not at all, is
+        # capped, which is the right answer for a mecanum wheel sliding sideways. Called without `turn` — a
+        # drive program, a test — the rotations given *are* the commanded ones, and the cap stays off.
+        cap = math.inf if turn is None else abs(turn) + floor_t
+        a1, a3 = min(abs(rot1), cap), min(abs(rot2), cap)
+        s1 = math.hypot(p.alpha1 * a1 + p.alpha2 * trans, 0.0) + floor_t
+        s2 = p.alpha2 * trans + p.alpha1 * (a1 + a3) + floor_xy
+        s3 = math.hypot(p.alpha3 * a3 + p.alpha2 * trans, 0.0) + floor_t
         r1 = wrap(rot1 - self.rng.normal(0.0, s1, size=self.n))
         d = max(trans, 0.0) - self.rng.normal(0.0, s2, size=self.n)
         r2 = wrap(rot2 - self.rng.normal(0.0, s3, size=self.n))
@@ -169,8 +195,9 @@ class MonteCarloLocaliser:
                                             and t > self.last_odom_t) else self.p.default_dt
         self.last_odom_t = getattr(pose, "t", self.last_odom_t)
         prev = self.last_odom
-        self.last_odom = _pose(pose)
-        self.predict(*self.delta_from_odometry(prev, pose), dt=dt)
+        new = _pose(pose)
+        self.last_odom = new
+        self.predict(*self.delta_from_odometry(prev, new), dt=dt, turn=wrap(new[2] - prev[2]))
         return True
 
     # -------------------------------------------------------------------------------- sensor model
@@ -374,6 +401,13 @@ def _pose(p) -> tuple:
     """`.x/.y/.theta` of an Odom, or the first three of a sequence, as plain floats."""
     if hasattr(p, "x") and hasattr(p, "theta"):
         return float(p.x), float(p.y), float(p.theta)
+    if isinstance(p, Mapping):
+        # The dict case is not decoration: `update()` documents a recording as a valid argument, and a replay
+        # tool that reaches `predict_odometry()` with the odometry row of such a recording got
+        # `ValueError: could not convert string to float: 'x'` — iterating a dict yields its keys, and the
+        # sequence branch below happily floated the first one. The docstring promised a dict; the code is
+        # what needed fixing.
+        return float(p["x"]), float(p["y"]), float(p.get("theta", 0.0))
     seq = tuple(p)
     return float(seq[0]), float(seq[1]), float(seq[2] if len(seq) > 2 else 0.0)
 

@@ -33,7 +33,7 @@ two poses that generated the scans:
 | point-to-line | **8.6 mm** | **0.076°** | 49.7 mm | 5.42 mm | 17.4 | **5.5** | 11/12 |
 
 The `--claims` run (10 pairs, seed 17) quotes **6.6×** in translation and **2.9×** in rotation; on the
-deterministic fixture pair in `tests/test_icp.py` (a 1.4 m move with 0.4 rad of turn in `rooms`) it is
+deterministic fixture pair in `test/test_icp.py` (a 1.4 m move with 0.4 rad of turn in `rooms`) it is
 **6.2×** and **263×**. Both sentences are true. The rotation advantage needs a lever arm against a long
 wall, so it is large on a pair that has one and small on a median over random pairs — which is why the
 executable claim checks the median and quotes the pair-level number with its provenance attached.
@@ -149,6 +149,40 @@ icp.mean_match(src, dst, icp.inverse(icp.relative(a, b)), max_corr=1.0)   # fitn
 `T_guess` is not optional in a system that works: it is the odometry, the previous scan's result, or a coarse
 search. Passing the identity because it is convenient is how you get the bare-corridor number above as your
 "result".
+
+## Stitching scans into odometry — and what it costs
+
+`ohm_localization/icp_odom_node.py` runs ICP between *consecutive* scans and integrates them: no map, no
+prior, no particles. It is the control experiment for the whole exercise, and the numbers are in
+`docs/verification.md` §13. The short version, on the graded drive:
+
+| | one pairwise step | integrated over the drive |
+|---|---|---|
+| point-to-line | 7 mm, 0.04° | **0.91–1.76 m** |
+| point-to-point | 7 mm, 0.04° | 0.78–1.2 m |
+| the wheel odometry | ~30 mm | 0.07–0.18 m |
+| the map-based filter of L1 | — | **0.015 m** |
+
+Two things have to be true before that table means anything, and `test/test_icp_odometry.py` asserts both.
+The first is a **control**: integrating the *exact* per-step transforms taken from `/truth` through the same
+accumulator must reproduce the exact path (`< 1e-9`). The version shipped for an hour chained `T @ res.T`
+where the robot's increment is `T @ inverse(res.T)` — `icp.relative(a, b)` carries *points* from the old frame
+into the new one — and drifted 4.9 m on a drive whose true transforms were the input. A test that feeds an
+integrator only its own algorithm's output cannot tell an integration bug from a bad algorithm.
+
+The second is that the drift is **bias, not noise**, and that it belongs to one objective: mean signed
+rotation error per step is −0.051° (line) against −0.0009° (point) on the recording, summing to −37° of
+heading over 726 steps, where independent noise would have given 5.9°. A bias added N times grows linearly.
+It survives `sigma_z`, the linearisation's `unit_sincos` scaling and every beam stride, so it is a property of
+the linearised point-to-line objective in a hall of flat walls. Which is the honest answer to "why is your ICP
+not working on the real robot": a 6 mm pairwise accuracy quoted without a horizon is not a claim, and
+rotation in a corridor is the degenerate direction — the same degeneracy as `--degenerate` above, arriving by
+itself one step at a time.
+
+The node therefore reports σ as the **median** pairwise σ widened by √N — median, because the last pair is
+chosen by the clock and not by the geometry (its σ_θ runs 0.13° at the median to 0.66° at its worst on the
+graded drive), and widened, because a pairwise covariance published as a pose covariance claims millimetres for
+a 36 s drive. Even √N under-claims a bias.
 
 ## Questions for the protocol
 

@@ -6,10 +6,10 @@ are printed next to them, and [`verification.md`](verification.md) has the run.
 
 | | task | what changes from the one before | graded | solution |
 |---|---|---|---|---|
-| L1 | `mcl_production` | — | rmse ≤ 50 mm · ≥ 5× odometry · NEES [0.1, 5] | 27 mm · 6.96× · 0.35 — **30/30** |
-| L2 | `mcl_wide` | prior σ **2 m** instead of 0.5 m | rmse ≤ 60 mm · ≥ 3× · max err ≤ 350 mm | 27 mm · 6.99× · max 74 mm — **35/35** |
-| L3 | `mcl_budget` | **250 particles**, every beam | rmse ≤ 70 mm · ≥ 3× · NEES ≤ 12 | 56 mm · 7.9× · 5.4 — **35/35** |
-| L4 | `mcl_dirty` | **LIDAR σ 15 mm → 250 mm** | rmse ≤ 70 mm · ≥ 2.5× · NEES [0.3, 5] | 56 mm · 3.32× · 0.58 — **30/30** |
+| L1 | `mcl_production` | — | rmse ≤ 50 mm · ≥ 5× odometry · NEES [0.05, 5] | 15 mm · 12.5× · 0.19 — **30/30** |
+| L2 | `mcl_wide` | prior σ **2 m** instead of 0.5 m | rmse ≤ 60 mm · ≥ 3× · max err ≤ 350 mm | 15 mm · 12.6× · max 37 mm — **35/35** |
+| L3 | `mcl_budget` | **250 particles**, every beam | rmse ≤ 70 mm · ≥ 3× · NEES ≤ 12 | 17 mm · 26.4× · 0.27 — **35/35** |
+| L4 | `mcl_dirty` | **LIDAR σ 15 mm → 250 mm** | rmse ≤ 70 mm · ≥ 2.5× · NEES [0.3, 5] | 35 mm · 5.4× · 1.66 — **30/30** |
 
 `pass_from` is 50 %, but treat anything under "all four" as unfinished: they are one filter seen from four
 directions, and L4 is only interesting once L1 works.
@@ -60,7 +60,8 @@ that is the difference between tracking a robot and being half an hour behind it
 
 ## L1 — Where am I? Monte-Carlo localisation against the map
 
-*30 pts · `production` · 34 s drive · solution 27 mm against 187 mm of odometry (6.96×), NEES 0.35*
+*30 pts · `production` · 34 s drive · solution 15 mm against 187 mm of odometry (12.5×), NEES 0.19 · the shipped
+template reaches 0.68 m (0.27×) and fails, which is the point of starting there — see `student/FAILURE.md`*
 
 The grader drives; you estimate. One scan every twentieth of a second, 360 beams, and a map you did not
 build: draw N samples from the belief you were given, move them by the odometry, weight each by how well its
@@ -87,7 +88,7 @@ And the scatter you add in the motion step is load-bearing: with zero motion noi
 
 ## L2 — Parked somewhere else: localisation from a 2 m prior
 
-*35 pts · same hall, same drive · prior σ = 2 m · solution 27 mm, 6.99×, max error 74 mm*
+*35 pts · same hall, same drive · prior σ = 2 m · solution 15 mm, 12.6×, max error 37 mm*
 
 The robot was not where the odometry claims. Two metres of 1σ around the start pose means the true pose is in
 the cloud *surrounded by a thousand wrong neighbours*, and the first scans have to throw the neighbours away.
@@ -113,8 +114,9 @@ The task file now says `particles: 250` and `beam_stride: 1` — a quarter of th
 accuracy and 3× the beams per particle. The cost of one update is `particles × beams`, which is unchanged, so
 this is the *same computation spent differently*: 360 beams constrain a pose far more sharply than 1200
 particles cover a hall. Measured on one recording: 13 mm at 1200 × 107, 25 mm at 250 × 322, and NEES 0.22 →
-2.07. Accuracy is not the only thing that degrades, and the graded numbers say the same thing: 27 mm
-against L1 and 56 mm here, in the same hall on the same wheels.
+2.07. Accuracy is not the only thing that degrades, and the graded numbers say the same thing: 15 mm
+against L1 and 17 mm here — but L3 pays for it in the budget, not in the accuracy, which is the lesson the
+task asks for (`docs/verification.md` §12 has both numbers and what a quarter of the particles costs).
 
 **Protocol.** One update must be vectorised NumPy — all particles, all beams, no Python loop over particles.
 Hand in the measured cost table (`mcl_report.py --timing` gives you milliseconds per update for any setting),
@@ -127,7 +129,8 @@ too, and say what you changed.
 
 ## L4 — The window is dirty: make the model match the sensor
 
-*30 pts · same hall, same drive · `lidar.sigma = 0.25 m` · solution 56–57 mm, 3.3×, NEES 0.52–0.57*
+*30 pts · same hall, same drive · `lidar.sigma = 0.25 m` · solution 35 mm, 5.4×, NEES 1.66 · with L1's σ_z = 0.15
+on this sensor the same filter reports 96 mm at NEES 15–38: the model, not the code, is what is wrong here*
 
 One change you will not see in the topic: the LIDAR's σ is 250 mm instead of 15 mm — a reflective, partly
 covered window, which on a real robot is a Tuesday. The parameters that won L1 will not survive this, not

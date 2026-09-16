@@ -13,7 +13,7 @@ import pytest
 from conftest import free_pose                                   # noqa: F401
 from ohm_localization import synth
 from ohm_localization.gridmap import GridMap, load_hall
-from ohm_localization.mcl import MclParams, MonteCarloLocaliser
+from ohm_localization.mcl import MclParams, MonteCarloLocaliser, wrap
 
 
 class Run:
@@ -318,3 +318,76 @@ def test_a_pose_that_carries_its_own_stamp_needs_no_told_dt(hall):
     f.predict_odometry(SimpleNamespace(x=6.0, y=8.0, theta=0.0, t=0.0))
     f.predict_odometry(SimpleNamespace(x=6.0, y=8.0, theta=0.0, t=2.0))    # two seconds, one message
     assert f.estimate()["sx"] == pytest.approx(0.05 * math.sqrt(2.0), rel=0.25)
+
+
+def _standing_cloud(hall, theta, capped, jitter=0.01, steps=200, dt=0.05):
+    """One filter, ten seconds of a robot that is not moving but whose odometry jitters by 1 cm."""
+    rng, f = np.random.default_rng(3), None
+    prev = (6.0, 6.0, theta)
+    for k in range(steps):
+        j = rng.normal(0, jitter, 3)
+        pose = (6.0 + j[0], 6.0 + j[1], theta + j[2])
+        if f is None:
+            f = MonteCarloLocaliser(GridMap(hall), MclParams(particles=1200), pose=pose,
+                                    sigma=(0.02, 0.02, 0.02), rng=np.random.default_rng(11))
+            f.last_odom, f.last_odom_t = pose, k * dt
+            prev = pose
+            continue
+        d = f.delta_from_odometry(prev, pose)
+        f.predict(*d, dt=dt, turn=wrap(pose[2] - prev[2]) if capped else None)
+        prev = pose
+    e = f.estimate()
+    dev = (f.x[:, 2] - e["theta"] + np.pi) % (2 * np.pi) - np.pi
+    return e["sx"], float(np.std(dev))
+
+
+def test_a_robot_that_stands_still_does_not_spin_its_cloud_apart(hall):
+    """The bearing of a step that did not translate is undefined, and the noise model must know that.
+
+    `delta_from_odometry` takes rot1 from atan2(dy, dx).  A robot standing still, or turning on the spot,
+    translates per step by the odometry's own jitter — 1 cm in these tasks — whose bearing is a uniform
+    random angle, so rot1 came out at a median of 1.61 rad per step and rot2 = turn − rot1 near ∓π.
+    Rotation noise is proportional to |rot1|, so such a robot was charged α·π of heading noise per step
+    while doing nothing: measured over ten seconds, σ_θ 1.69 rad and σ_x 1.93 m against a noise floor of
+    0.28 rad and 0.14 m.  `predict(..., turn=)` — which `predict_odometry()` now passes — says a step may
+    not claim more rotation noise than the rotation it demonstrably did.  The graded numbers improved when
+    this went in (L1 27 → 15 mm RMSE); until then the sensor model was quietly re-converging after every
+    spin, which is what a masked bug looks like.
+    """
+    for theta in (0.0, math.pi):                      # the heading must not matter, and did not
+        loose_x, loose_t = _standing_cloud(hall, theta, capped=False)
+        tight_x, tight_t = _standing_cloud(hall, theta, capped=True)
+        assert loose_t > 1.2 and loose_x > 1.2, (loose_x, loose_t)     # the bug, still reproducible
+        assert tight_t < 0.8, f"σ_θ {tight_t:.2f} rad for a robot that never turned"
+        assert tight_x < 0.8, f"σ_x {tight_x:.2f} m for a robot that never moved"
+        assert tight_t < 0.6 * loose_t and tight_x < 0.6 * loose_x
+
+
+def test_a_step_that_really_turns_is_not_capped(hall):
+    """`turn` may only discount a bearing nobody can see; a leg and an arc must be untouched by it."""
+    f = MonteCarloLocaliser(GridMap(hall), MclParams(particles=400), pose=(6.0, 6.0, 0.0),
+                            sigma=(0.0, 0.0, 0.0), rng=np.random.default_rng(5))
+    for rot1, trans, rot2 in ((0.0, 0.30, 0.0),                    # straight leg
+                              (math.radians(10), 0.30, math.radians(10))):   # an arc
+        start, turn = f.x.copy(), wrap(rot1 + rot2)
+        for capped, given in ((True, turn), (False, None)):     # two fresh generators, one cloud
+            f.x, f.rng = start.copy(), np.random.default_rng(9)
+            f.predict(rot1, trans, rot2, dt=0.1, turn=given)
+            if capped:
+                with_cap = f.x.copy()
+        assert np.allclose(with_cap, f.x), (rot1, trans, rot2)      # the cap never bound
+
+
+def test_a_recorded_pose_is_a_pose_too(hall):
+    """`update()` documents recordings as valid input; `predict_odometry` must accept their rows as well.
+
+    Iterating a dict yields its keys, so the sequence branch of `_pose()` tried `float("x")` and raised
+    `ValueError: could not convert string to float: 'x'` — an error message about a string, for a bug in a
+    pose parser, in the middle of a replay that a reader had been told would work.
+    """
+    f = MonteCarloLocaliser(GridMap(hall), MclParams(particles=200), pose=(6.0, 6.0, 0.0),
+                            sigma=(0.0, 0.0, 0.0), rng=np.random.default_rng(6))
+    assert f.predict_odometry({"x": 6.0, "y": 6.0, "theta": 0.0, "t": 0.0}) is False   # nothing to compare to
+    assert f.predict_odometry({"x": 6.3, "y": 6.0, "theta": 0.0, "t": 1.0}) is True
+    assert f.last_odom == pytest.approx((6.3, 6.0, 0.0))
+    assert f.estimate()["x"] > 6.0

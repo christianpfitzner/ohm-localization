@@ -13,7 +13,7 @@ Two sources, in this order:
     the simulator installed.
 2.  `worlds/<name>.txt` read by `parse_grid()` below — for a laptop with NumPy and no simulator.
     It reproduces the simulator's conventions on purpose (origin bottom left, cell centres
-    half a cell inside, row 0 of the text is the top edge) and `tests/test_gridmap.py` pins the two
+    half a cell inside, row 0 of the text is the top edge) and `test/test_gridmap.py` pins the two
     sources against each other, because an unnoticed difference between them is a broken exercise
     that every group discovers at a different time.
 
@@ -27,15 +27,16 @@ particles times a hundred beams twenty times a second.  So the field is evaluate
 a fine grid (`field_resolution`, 10 cm by default — a quarter of the occupancy resolution, so the
 most a beam can lose to the raster is 7 cm against a sensor model that is already 15 cm wide) and
 the hot loop gathers from that grid.  `distance_at()` stays the exact form, `field_at()` the fast
-one, and `tests/test_gridmap.py` pins the two against each other instead of trusting the word "fine".
+one, and `test/test_gridmap.py` pins the two against each other instead of trusting the word "fine".
 """
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from ohm_localization import paths
 
 DEFAULT_CELL = 0.5                      # m, the simulator's worlds.CELL
 FREE, OCCUPIED, UNKNOWN = 0, 100, -1    # nav_msgs/msg/OccupancyGrid values
@@ -75,38 +76,61 @@ def mecanum_lab_dir(explicit: str | None = None) -> str:
     return ""
 
 
+def mecanum_lab_root(explicit: str | None = None) -> str:
+    """Where the simulator keeps its `worlds/`: the checkout if there is one, the install prefix if not.
+
+    This is the question a colcon workspace changes.  `mecanum_lab_dir()` above answers "where is the
+    checkout", which is what `install.sh --check` and `tools/drive_check.py` print; but after
+    `colcon build` and `source install/setup.bash` there is no checkout on the path, `mecanum_lab` is
+    importable anyway, and its hall text lives in `<prefix>/share/mecanum_lab/worlds/`.  A localiser that
+    can only answer the first question reports "no such world 'production'" in exactly the setup the
+    simulator's own install script recommends — which is how a path bug becomes a mystery about a hall.
+    """
+    return paths.mecanum_lab_root(explicit or mecanum_lab_dir(explicit))
+
+
 def load_hall(name: str, cell: float | None = None, mec_dir: str | None = None) -> Hall:
     """The hall named `name`, from the simulator if it is there and from its text file if not.
 
     `cell` overrides the grid edge on the text-file path only.  On the simulator path the cell size
     comes from the simulator's config, because that is the size the walls were built from.
+
+    The simulator is tried **imported as it already stands** — an installed package that the shell has
+    sourced — and a checkout's directory is only added afterwards, with `paths.add_to_path`, which
+    *appends*.  A `PYTHONPATH` that shadows the installed `mecanum_lab` with an older checkout turns a path
+    bug into what reads like a simulator bug, and the simulator's own launch files make the same choice for
+    the same reason.
     """
     directory = mecanum_lab_dir(mec_dir)
-    if directory and directory not in sys.path:
-        sys.path.insert(0, directory)
     if directory:
-        try:
-            from mecanum_lab import types, worlds            # after the path is in place
-        except Exception:
-            pass
-        else:
-            cfg = {"worlds": types.cfg_get(types.load_config(), "worlds", {})}
-            if cell is not None:
-                cfg["worlds"]["cell"] = float(cell)
-            w = worlds.load_world(name, cfg=cfg)
-            rects = [[r.x0, r.y0, r.x1, r.y1] for r in w.walls]
-            return Hall(name=w.name, cell=float(w.cell), size=tuple(w.size),
-                        rects=np.asarray(rects, dtype=float).reshape(-1, 4))
-    # No simulator: the text file, parsed under the same rules.
-    for base in (directory, os.getcwd(), os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "worlds")):
+        paths.add_to_path(directory)
+    try:
+        from mecanum_lab import types, worlds            # installed already, or the checkout just added
+    except Exception:
+        pass
+    else:
+        cfg = {"worlds": types.cfg_get(types.load_config(), "worlds", {})}
+        if cell is not None:
+            cfg["worlds"]["cell"] = float(cell)
+        w = worlds.load_world(name, cfg=cfg)
+        rects = [[r.x0, r.y0, r.x1, r.y1] for r in w.walls]
+        return Hall(name=w.name, cell=float(w.cell), size=tuple(w.size),
+                    rects=np.asarray(rects, dtype=float).reshape(-1, 4))
+    # No simulator importable: the text file, parsed under the same rules.  `mecanum_lab_root()` belongs in
+    # this list because after a colcon build that `share/mecanum_lab` is the only place the hall text is;
+    # `paths.data_root()` is there so that a hall dropped into this package's own `worlds/` also works, in
+    # either layout.
+    bases = [directory, mecanum_lab_root(mec_dir), paths.data_root(), os.getcwd(),
+             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
+    for base in bases:
         path = os.path.join(base or "", "worlds", f"{name}.txt")
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as fh:
                 return parse_grid(fh.read(), cell or DEFAULT_CELL, name)
     raise FileNotFoundError(
-        f"World '{name}': no simulator checkout found and no worlds/{name}.txt here.  "
-        "Pass --sim DIR or set MECANUM_LAB (see install.sh --check).")
+        f"World '{name}': no importable mecanum_lab and no worlds/{name}.txt in "
+        + ", ".join(b for b in bases if b) + ".  Set MECANUM_LAB, or build the workspace and source it "
+        "(install.sh --build); the hall comes from the simulator either way — this repository keeps no copy.")
 
 
 def corridor_text(cols: int = 60, rows: int = 10, pillars: int = 0) -> str:
@@ -122,7 +146,7 @@ def corridor_text(cols: int = 60, rows: int = 10, pillars: int = 0) -> str:
     Line 0 of the text is the top edge (`parse_grid` mirrors it), which makes the long walls the first
     and last *lines*.  Writing them as the first and last columns instead — my first attempt — gives a
     hall open at both ends with four stubs, and a clearance query at its centre then answers 12 m
-    instead of 1.5 m: `tests/test_icp.py` checks the fixture's own clearance for that reason.
+    instead of 1.5 m: `test/test_icp.py` checks the fixture's own clearance for that reason.
     """
     rows = max(rows, 6)
     grid = [["#"] * (cols + 2)]
@@ -279,3 +303,85 @@ def load_map(world: str, resolution: float = 0.25, field_resolution: float = 0.1
     """`load_hall` and `GridMap` in one call — what a node writes on startup."""
     return GridMap(load_hall(world, cell=cell, mec_dir=mec_dir), resolution=resolution,
                    field_resolution=field_resolution)
+
+
+# ------------------------------------------------------------- the same map as an ROS message
+
+def occupancy_grid(g: "GridMap", frame_id: str = "map", stamp=None) -> dict:
+    """A `GridMap` as the fields of a `nav_msgs/msg/OccupancyGrid`, without importing nav_msgs.
+
+    The reason for the plain dict in the middle is testability, and the reason for the message at all is
+    RViz: the simulator publishes the walls as markers and nothing else, so a group that wants to *see* the
+    map their filter is using — which is the first thing to want when a localiser disagrees with a drive —
+    needs an `OccupancyGrid` on `/map`. Writing the conversion here rather than in the node means the
+    round-trip test below runs on a machine with NumPy alone, and the node that wraps this dict in a real
+    message is eleven lines of glue that cannot get the geometry wrong.
+
+    The layout is the message's: `data` is row-major with row 0 at the origin corner (`info.origin`), rows
+    along +x?? no — along +y, which is what `GridMap.data[row, col]` already is, so the flattening is a
+    `ravel()` and not a transpose. A transpose here would be invisible in a hall that is nearly symmetric
+    about its middle and catastrophic in one that is not.
+    """
+    data = np.ascontiguousarray(g.data, dtype=np.int8)
+    return {
+        "header": {"frame_id": frame_id, "stamp": stamp},
+        "info": {
+            "map_load_time": None,
+            "resolution": float(g.resolution),
+            "layer": "static",
+            # origin: the corner the data starts at, which for this class is always (0, 0, 0) — the hall's
+            # own world frame. Reading a map back from elsewhere shifts the other way, in `hall_from_...`.
+            "origin": {"position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                       "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}},
+            "width": int(g.width), "height": int(g.height),
+        },
+        "data": data.ravel().tolist(),
+    }
+
+
+def hall_from_occupancy_grid(grid, name: str = "occupancy_grid") -> "Hall":
+    """The inverse: an `OccupancyGrid` (message or the dict above) back to wall rectangles.
+
+    Accepts a real message as well, because `nav_msgs` exposes the same attribute names this dict uses as
+    keys — so the only difference between the two arguments is `msg.info` versus `grid["info"]`, handled
+    once here rather than in every caller.
+
+    One rectangle per occupied cell, unmerged, which is what `parse_grid` produces too: merging runs of
+    cells into longer walls would change nothing about the geometry (the union is the same), and `Hall` is
+    read as a *set of boxes to measure distance to*, where fewer boxes is a speed win and nothing else.
+    `-1` (unknown) is treated as *not a wall*: a map that does not know is not a map full of obstacles.
+    Cells that are neither 0, 100 nor −1 (a probabilistic map from somewhere else) are walls from 50 up,
+    the threshold `map_server` itself uses.
+
+    The origin is applied, which is the one place a map from another frame can quietly arrive 3 m off:
+    a map whose `origin.x` is −1.5 describes walls 1.5 m to the right of where an identity-origin map puts
+    them, and a localiser on top of it will happily localise the robot 1.5 m outside the hall.
+    """
+    def get(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    info = get(grid, "info")
+    if info is None:
+        raise ValueError("not an OccupancyGrid: no .info / 'info' to read resolution and origin from")
+    res = float(get(info, "resolution", 0.0) or 0.0)
+    width, height = int(get(info, "width", 0)), int(get(info, "height", 0))
+    if res <= 0.0 or width <= 0 or height <= 0:
+        raise ValueError(f"OccupancyGrid is unusable: resolution {res}, size {width}x{height}")
+    origin = get(info, "origin") or {}
+    pos = get(origin, "position") or {}
+    ox, oy = float(get(pos, "x", 0.0) or 0.0), float(get(pos, "y", 0.0) or 0.0)
+
+    flat = list(get(grid, "data") or [])
+    if len(flat) != width * height:
+        raise ValueError(f"OccupancyGrid data holds {len(flat)} cells, the header promises "
+                         f"{width}x{height} = {width * height}. Row-major, starting at the origin "
+                         "corner — a column-major map or a truncated list lands here.")
+    data = np.asarray(flat, dtype=np.int16).reshape(height, width)
+    occupied = data >= 50                                   # 100 is a wall, -1 is unknown, 0 is free
+    rects = []
+    for row, col in zip(*np.nonzero(occupied)):
+        rects.append((ox + col * res, oy + row * res, ox + (col + 1) * res, oy + (row + 1) * res))
+    return Hall(name=name, cell=res, size=(width * res, height * res),
+                rects=np.asarray(rects, dtype=float).reshape(-1, 4))
