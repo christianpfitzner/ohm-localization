@@ -39,6 +39,7 @@ import sys
 
 from launch import LaunchDescription
 import launch.actions as L
+from launch.event_handlers import OnProcessExit
 
 # The package's data root in either layout: in a checkout this is the repository, after a colcon build it is
 # `<prefix>/share/ohm_localization`, and the three directories the launch file needs — `config/`,
@@ -57,6 +58,9 @@ BASICS = [
     ("seconds", "0", "end after N seconds of simulation time (0 = until the task is through or Ctrl-C)"),
     ("headless", "false", "without the Pygame window (sets SDL_VIDEODRIVER=dummy)"),
     ("truth", "true", "publish the exact pose on /<robot>/truth; the grader needs it"),
+    ("drive", "true", "drive the task's commanded path with this package's drive_node — a `kf` task is "
+                      "otherwise driven only by a grader, so without this the robot stands still "
+                      "(empty or false = drive nothing by hand: the keyboard does)"),
     ("seed", "1", "noise seed: same seed, same measurement series"),
     ("log", "", "CSV measurement log, e.g. runs/mcl.csv — tools/mcl_report.py reads its own recording"),
     ("rviz", "false", "start rviz2 on this robot's topics: auto | true | false"),
@@ -138,14 +142,26 @@ def setup(context, *args, **kwargs):
         node_cmd = [sys.executable, "-m", "ohm_localization.mcl_node", "--robot", robot]
         node_name = "mcl_node"
 
-    parts = [L.ExecuteProcess(cmd=sim, additional_env=env, output="screen", name="mcl_sim",
-                              emulate_tty=True),
+    sim_proc = L.ExecuteProcess(cmd=sim, additional_env=env, output="screen", name="mcl_sim",
+                                emulate_tty=True)
+    parts = [sim_proc,
              L.ExecuteProcess(cmd=node_cmd, additional_env=env, output="screen",
                               name=f"node_{robot}", emulate_tty=True)]
+    # The run is over when the simulator says so (`seconds:=` or the task's drive): without this the
+    # node outlives it and `ros2 launch` sits there until Ctrl-C.
+    parts.append(L.RegisterEventHandler(OnProcessExit(
+        target_action=sim_proc, on_exit=[L.Shutdown(reason="simulator finished")])))
     if arg("map").lower() in TRUE:
         parts.append(L.ExecuteProcess(
             cmd=[sys.executable, "-m", "ohm_localization.map_server_node", "--world", arg("world")],
             additional_env=env, output="screen", name="map_server"))
+
+    # A `kind: "kf"` task is driven by the grader, so a run without `grade:=` needs its own driver or
+    # the localiser spends the whole drive watching a robot that never left its spawn pose.
+    if arg("drive").lower() in TRUE and not arg("grade"):
+        parts.append(L.ExecuteProcess(
+            cmd=[sys.executable, "-m", "ohm_localization.drive_node", "--robot", robot],
+            additional_env=env, output="screen", name=f"drive_{robot}"))
 
     note = None
     if arg("rviz").lower() in TRUE or arg("rviz").lower() == "auto":

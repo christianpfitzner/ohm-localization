@@ -188,6 +188,21 @@ Beam noise (12 pairs, median |Δt|): σ_beam 5 mm → line 9 mm; 20 mm → 9 mm;
 10 mm; 150 mm → point 96 mm / line 40 mm. Both degrade near-linearly in σ_beam; the ratio narrows from
 4× to 2.4×.
 
+**Which cloud the stride is allowed to thin.** `production`, the fixture pair of
+`test/test_icp_coverage.py` (point-to-line, σ_beam 20 mm), median |Δt|, σ and mean squared Mahalanobis
+over 120 noise draws; mean signed yaw error over the 399 consecutive pairs of the 20 s graded-shape drive
+of `test/test_icp_odometry.py`:
+
+| `stride` (source) | `stride_dst` (target) | median \|Δt\| | reported σ | mean Mahalanobis² | yaw error |
+|---|---|---|---|---|---|
+| 4 | 1 — what the code does by default | 6.0 mm | 3.6 mm | 3.38 | −0.099°/step |
+| 4 | 4 | 132.9 mm | 39.3 mm | 9.54 | +1.307°/step |
+| 2 | 2 | 23.4 mm | 6.1 mm | 14.88 | +0.054°/step |
+| 1 | 1 | 6.5 mm | 2.1 mm | 10.59 | −0.035°/step |
+
+Thinning the target moves the normal that point-to-line measures its residual along, which enters every
+residual with the same sign: the yaw column is a bias, not noise.
+
 Basin of attraction (guess displaced along x, median |Δt| of the result):
 
 | σ_beam | mode | 0 | 0.1 | 0.25 | 0.5 | 1.0 | 2.0 | 3.0 | 5.0 m |
@@ -308,6 +323,14 @@ green test suite, and none was visible from the code that contained it.
     chassis has (`geometry.scale_xy 1.03`, `bias_omega 0.004`), which makes the baseline 187 mm and the
     improvement meaningful; and the arena task became the dirty-window task, whose ceiling (49 mm offline,
     56 mm graded) was measured before its threshold was written.
+12. **`stride` was popped out of `**kwargs` twice, so only the first cloud was ever thinned.**
+    `register_scans` asked each cloud for `kwargs.pop("stride", 1)`; the second ask found nothing left and
+    used the default. Every number in §6 was therefore measured with a dense target, which is the good
+    case — but the name promised something else, and honouring the promise is not a fix: point-to-line fits
+    the wall through target points, and a thinned target took the pair from **6.0 mm** to **133 mm** and
+    added +1.3°/step of yaw (§6's stride table). Caught by four coverage and odometry tests failing on the
+    one-line change; `stride_dst` and `test_the_target_cloud_is_not_free_to_thin` keep it from being tidied
+    back.
 
 ## 9. Soft spots, stated plainly
 

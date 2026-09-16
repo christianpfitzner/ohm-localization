@@ -45,6 +45,15 @@ point-to-line residual measures distance to the surface, where that snap is wort
 converges in a third of the iterations (5.5 against 18.0), because a line constraint couples the three DOF
 instead of pulling each point at right angles to itself.
 
+The surface it measures to is fitted, and what it is fitted from is load-bearing. `register_scans` thins
+the source with `stride` and leaves the target at `stride_dst=1`, and that asymmetry is a measurement: on
+the fixture pair of `test/test_icp_coverage.py` (60 draws, σ_beam 20 mm, `stride` 4) a dense target gives
+**6.5 mm** of median error and −0.005° of mean yaw error, a target thinned by the same 4 gives **133 mm**
+and **−0.404°**. The residual is taken along the normal of a line fitted through the nearest target
+points, so a thinned target tilts that normal by the along-wall spacing and the tilt enters every residual
+with the same sign — a bias rather than noise. Thinning the source costs measurements; thinning the target
+costs the fit.
+
 On **real beams** from a graded drive (`--recorded /tmp/prod.jsonl`, σ_sensor 15 mm, truth from the
 simulator's `/truth`): point 16.0 mm / 0.272°, point-to-line **6.0 mm / 0.040°** — so the synthetic
 geometry is not flattering the method. But note the converged column: 10/12 for line against 12/12 for

@@ -164,11 +164,15 @@ def world_name(rob) -> str:
 
 def mission(rob, task):
     """Publish the stitched pose on `kf/pose` for as long as this task runs."""
+
+    # Function-local: this node reaches ROS through `robot_io`, and its entry point must stay
+    # importable on a machine with no ROS.
+    from ohm_localization.mcl_node import spin_or_stop
+
     print(f"icp_odom: mode {MODE}, stride {STRIDE}, σ_z {SIGMA_Z} m, guess "
           f"{'odometry' if USE_ODOM_GUESS else 'identity'} — no map is read by this node", file=sys.stderr)
     f, letzter, last_t = IcpOdom(), -1e9, None
-    while rob.running() and rob.task() == task:
-        rob.spin(0.005)
+    while rob.running() and rob.task() == task and spin_or_stop(rob, 0.005):
         o, scan = rob.odom(), rob.scan()
         if scan is None or last_t is not None and scan.t <= last_t:
             continue
@@ -192,7 +196,10 @@ def main() -> None:
     tested without it either.
     """
     from mecanum_lab import robot_io                 # the controller door; see mcl_node.py for the other two
-    robot_io.serve(sys.modules[__name__])
+    try:
+        robot_io.serve(sys.modules[__name__])
+    except KeyboardInterrupt:
+        print("icp_odom_node: stopped", file=sys.stderr)
 
 
 if __name__ == "__main__":

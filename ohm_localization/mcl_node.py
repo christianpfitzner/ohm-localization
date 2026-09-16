@@ -1,56 +1,34 @@
 #!/usr/bin/env python3
-"""Exercise L1/L2 — Monte-Carlo localization, running on the simulator's own topics.
+"""Exercise L1–L4 — Monte-Carlo localization on the simulator's topics: the reference solution.
 
-This is the **reference solution** of the exercise: a complete working filter, no TODOs.  The student
-version of this file is generated from it by `tools/make_template.py` (not in this run — see
-`todo.md`), and what it removes is the body of the two functions that carry the exercise: the
-weighting of a scan and the resampling decision.
+    ./tools/run_lab.sh grade --task mcl_production --controller solution/mcl_node.py --headless
+    ros2 launch ohm_localization mcl.launch.py
 
-What is already here, and what that is for
-------------------------------------------
-Everything a group would otherwise lose to plumbing rather than to estimation:
+Complete and without TODOs. `student/mcl_template.py` is this filter with the body of the sensor model
+removed. The filter itself is `ohm_localization.mcl.MonteCarloLocaliser`: `update()` is the sensor
+model, `predict_odometry()` the motion model, and both are the objects `test/test_mcl.py` runs.
 
-* the node lifecycle — `robot_io.serve()` at the bottom, `/sim/task` switching the run underneath it;
-* a loop that ticks on **message stamps** and never on the wall clock, throws away the measurements
-  the bus still remembers from the previous task, and restarts the filter after a long gap instead of
-  extrapolating it.  `tools/fastgrade.py` runs the simulator 25× faster than real time; a filter
-  driven by `time.monotonic()` estimates a drive that never happened;
-* the map: `GridMap(load_hall(name))` reads the same `worlds/<name>.txt` the simulator builds its
-  walls from, so the map cannot disagree with the physics — no `OccupancyGrid` topic is published by
-  the simulator yet, and this exercise does not wait for one;
-* the report on `/<robot>/kf/pose` with 1σ, which the grader measures RMSE *and* NEES against;
-* the parameters, which come from `config/tasks_localization.json` under the running task's `mcl`
-  block — the same single-source-of-JSON idiom the simulator uses for its thresholds, so a task can
-  ask for a wide prior or a small cloud without a line of this file changing.
+What the node adds, and what it insists on:
 
-The filter itself is `ohm_localization.mcl.MonteCarloLocaliser`, the same object the offline tests in
-`test/test_mcl.py` run against; `update()` is the whole sensor model and `predict_odometry()` the
-whole motion model.  Keeping that separation is why the numbers in `docs/verification.md` and the
-numbers `./lab grade` prints are the same quantity measured twice, once with a clock and once without.
+* the lifecycle — `robot_io.serve()` at the bottom, `/sim/task` starting a run underneath it;
+* a loop keyed on **message stamps**, never on the wall clock, which discards the measurements the bus
+  still remembers from the previous task and restarts the filter after a gap longer than `SLEEP`;
+* the map — `load_map(hall)` reads the same `worlds/<name>.txt` the simulator builds its walls from,
+  so map and physics cannot disagree;
+* `/<robot>/kf/pose` with 1σ, which the grader measures for RMSE *and* for NEES;
+* parameters from the running task's `mcl` block in `config/tasks_localization.json`, with `OHM_MCL_*`
+  on top of it.
 
-Run it
-------
-    tools/run_lab.sh grade --task mcl_production --controller solution/mcl_node.py
-    tools/run_lab.sh run   --world production --task mcl_production --robot alice \\
-                               --controller solution/mcl_node.py --truth
-
-Measured on this checkout (docs/verification.md §1): all four tasks pass, 130/130.  L1 grades at
-**15 mm** RMSE against **187 mm** of raw odometry — **12.5×** — with 1200 particles and 107 of 360
-beams, NEES 0.35, 34 Hz; the same drive replayed offline by `tools/mcl_report.py` measures 13 mm, the
-replay being optimistic by the factor the graded window's warm-up accounts for (§2).  L3, at 250
-particles and every beam, grades 55 mm at 7.88×; L4, where the sensor's σ is 250 mm, needs `sigma_z`
-0.5 from its own `mcl` block and grades 56 mm.
-
-The parameters here are not tuned for the grader: they are the ones the task file asks for, and the
-thresholds were written after the measurements rather than before them.  The one thing that does not
-work anywhere is this filter in an open hall — `arena` has 102 echoing beams against `production`'s 323,
-and the ceiling measured there is 1.12× the odometry, reached by setting σ_z to a metre (§4).  That is
-why `arena` is a protocol question and not a task.
+Measured on this checkout (`docs/verification.md`): all four tasks pass, 130/130. L1 grades at 15 mm
+against 187 mm of raw odometry — 12.5× — with 1200 particles and 1 beam in 3, NEES 0.19, 34 Hz. The one
+thing this filter does not do is localise in an open hall: `arena` has 102 echoing beams against
+`production`'s 323, and the ceiling measured there is 1.12× the odometry. That is why `arena` is a
+protocol question and not a task.
 """
 import json
-import math
 import os
 import sys
+import time
 
 from ohm_localization import paths
 from ohm_localization.gridmap import load_map
@@ -61,16 +39,15 @@ from ohm_localization.mcl import MclParams, MonteCarloLocaliser
 # for that in tools/check.sh), and a message package that is not built cannot take the map layer down with
 # it. `main()` is the one place the simulator is needed, and it imports it there.
 
-# `OHM_MCL_TRACE=/tmp/trace.txt` writes one line per scan: t, the estimate and its sigma, N_eff, the
-# beam count, the number of 5 cm boxes the cloud stands in, and the resample counter — every quantity
-# the filter computed out of what it was given, and nothing it was not given.  The truth is not in this
-# file and the node never reads `rob.truth()`; when a live run disagrees with `tools/mcl_report.py`,
-# which is the only way to find out whether the filter or the offline replay is the liar, the answer is
-# in which column diverges first, and that answer has to come from the filter's own numbers.
-TRACE = open(os.environ["OHM_MCL_TRACE"], "w") if os.environ.get("OHM_MCL_TRACE") else None
+# `OHM_MCL_TRACE=<file>` writes one line per scan: t, the estimate, its σ, N_eff, the beam count, the
+# number of 5 cm boxes the cloud stands in, and the resample counter. Columns are quantities the filter
+# computed; the truth is not among them. The file is opened on the first scan, not at import — importing
+# this module (the grader does, through `solution/mcl_node.py`) must not touch the disk.
+TRACE_FILE = os.environ.get("OHM_MCL_TRACE")
 
 REPORT_DT = 0.02          # s = 50 Hz: kf/pose report rate, as in the KF experiment
 SLEEP = 2.0               # s: a longer gap is a pause or a respawn, not a prediction
+WORLD_WAIT = 6.0          # s: how long to wait for /sim/world before falling back
 SIGMA_THETA_PRIOR = 0.6   # rad, 1σ of the initial heading: about ±35°, a robot that was parked
 
 # Defaults, in the units the sensor model has.  A task's "mcl" block overrides them; an environment
@@ -124,10 +101,39 @@ def task_options(task_id: str) -> dict:
     return opt
 
 
-def world_name(rob) -> str:
-    """Which hall this run is in — from /sim/world, or from the config if the sim is not ticking."""
-    name = str((rob.world() or {}).get("name") or rob.config("world", "arena") or "arena")
-    return name
+def task_world(task_id: str) -> str:
+    """The hall the task file names for this task — empty if the task file or the task is not there."""
+    try:
+        with open(task_file(), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return str(next((t.get("world") or "" for t in cfg.get("tasks", [])
+                         if t.get("id") == task_id), ""))
+    except (OSError, ValueError):
+        return ""
+
+
+def world_name(rob, task_id: str = "") -> str:
+    """Which hall this run is in: `/sim/world`, then the task file, then the simulator's config.
+
+    `rob.world()` answers from the simulator's config default when `/sim/world` has not arrived yet,
+    and that default is a different hall than the one the run was started in. The launch file starts
+    the simulator and this node in the same instant and the simulator republishes the topic once a
+    second, so asking once and taking the first answer localises the whole drive against the wrong
+    map — silently, with a plausible-looking estimate. Hence: wait for the topic.
+    """
+    deadline = time.monotonic() + WORLD_WAIT
+    while rob.running() and time.monotonic() < deadline:
+        payload = str(rob.bus.last("world")[0] or "")
+        if payload:
+            try:
+                name = str(json.loads(payload).get("name") or "")
+            except ValueError:
+                name = ""
+            if name:
+                return name
+        if not spin_or_stop(rob, 0.05):
+            return
+    return task_world(task_id) or str(rob.config("world", "arena") or "arena")
 
 
 def stamp(*measure) -> float:
@@ -146,6 +152,22 @@ def task_file() -> str:
     return paths.task_file()
 
 
+def spin_or_stop(rob, dt: float) -> bool:
+    """`rob.spin(dt)`, and whether the loop should go on.
+
+    A `ros2 launch` shutdown lands inside the wait set, where rclpy raises a pybind conversion error or an
+    `RCLError` rather than a clean one. The graph being gone is the end of the run, not a crash. Nothing
+    here asks `rclpy.ok()`: the in-process controller door never initialises rclpy, and that is not the end
+    of a run.
+    """
+    try:
+        rob.spin(dt)
+    except Exception as exc:                       # a wait set that died mid-wait: the run is over
+        print(f"mcl_node: spin stopped — {type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def mission(rob, task):
     """Localise for as long as this task runs; the runner reports "done" afterwards.
 
@@ -154,7 +176,7 @@ def mission(rob, task):
     new one arrives, and weighting a scan twice would double-count the world.
     """
     opt = task_options(task)
-    hall = world_name(rob)
+    hall = world_name(rob, task)
     grid = load_map(hall)
     params = MclParams(particles=int(opt["particles"]), beam_stride=int(opt["beam_stride"]),
                        sigma_z=float(opt["sigma_z"]), z_rand=float(opt["z_rand"]),
@@ -173,8 +195,8 @@ def mission(rob, task):
 
     f, baseline = None, stamp(rob.odom(), rob.scan())      # what the bus already knew
     last_odom_t, last_scan_t, letzter_meldung = 0.0, 0.0, -1e9
-    while rob.running() and rob.task() == task:
-        rob.spin(0.005)
+    trace = None
+    while rob.running() and rob.task() == task and spin_or_stop(rob, 0.005):
         o, scan = rob.odom(), rob.scan()
         if o is None or stamp(o, scan) <= baseline:
             continue                      # still the last messages of the previous task, not this drive
@@ -197,12 +219,14 @@ def mission(rob, task):
         if scan is not None and scan.t > last_scan_t:
             last_scan_t = scan.t
             f.update(scan)
-            if TRACE is not None:                # diagnostics only; see the note above `task_options`
-                t_e = f.estimate()               # the fresh one, not the loop's last-known `e`
-                TRACE.write(f"{scan.t:.3f} {t_e['x']:.4f} {t_e['y']:.4f} {t_e['theta']:.4f} "
+            if TRACE_FILE:                        # diagnostics only, opened on the first scan
+                t_e = f.estimate()                # the fresh one, not the loop's last-known `e`
+                if trace is None:
+                    trace = open(TRACE_FILE, "w")
+                trace.write(f"{scan.t:.3f} {t_e['x']:.4f} {t_e['y']:.4f} {t_e['theta']:.4f} "
                             f"{t_e['sx']:.4f} {t_e['sy']:.4f} {t_e['sth']:.4f} {t_e['neff']:.1f} "
                             f"{t_e['beams']} {f.diversity()} {t_e['resamples']}\n")
-                TRACE.flush()
+                trace.flush()
         e = f.estimate()                          # the newest estimate, on every loop, for `rate_min`
         if o.t - letzter_meldung >= REPORT_DT:
             letzter_meldung = o.t
@@ -224,7 +248,11 @@ def main() -> None:
     solution that only works through the door it was measured on is not a reference, it is an anecdote.
     """
     from mecanum_lab import robot_io                 # here, not at module import: see the note at the top
-    robot_io.serve(sys.modules[__name__])
+    try:
+        robot_io.serve(sys.modules[__name__])
+    except KeyboardInterrupt:
+        # Ctrl-C, or `ros2 launch` stopping this node when the simulator finished: a stop, not a crash.
+        print("mcl_node: stopped", file=sys.stderr)
 
 
 if __name__ == "__main__":

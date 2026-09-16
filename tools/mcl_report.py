@@ -68,8 +68,8 @@ def load(path):
         odom.append(f["odom"])
         t.append(float(f["t"]))
     if any(x is None for x in truth):
-        print(f"note: some frames have no /truth (recorded without debug_truth) — those frames are "
-              f"dropped from the error columns", file=sys.stderr)
+        print("note: some frames have no /truth (recorded without debug_truth) — those frames "
+              "are dropped from the error columns", file=sys.stderr)
     keep = [i for i in range(len(t)) if truth[i] is not None]
     return hall, np.array(t)[keep], [truth[i] for i in keep], [odom[i] for i in keep], \
         [scans[i] for i in keep], header

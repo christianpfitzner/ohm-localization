@@ -11,26 +11,15 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <!-- The two message types this package publishes. The library itself needs only numpy and imports no
-       ROS at all, which is what lets ./tools/run_lab.sh grade run on the in-process stub bus; a missing
-       message package therefore must not be able to break the import of ohm_localization, and the nodes
-       that need these types say so at start-up instead of at import time. -->
+  <!-- map_server publishes nav_msgs/OccupancyGrid; the library itself imports numpy and no ROS.
+       The simulator is a separate checkout next door and is deliberately not a depend here. -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-
-  <!-- Not declared as a dependency on purpose: the simulator is a separate repository that is also built
-       in this workspace, and a `<depend>mecanum_lab</depend>` here would make colcon order the two — which
-       is right — but would also make this package uninstallable on its own, which is wrong: the grading
-       path (tools/run_lab.sh) only needs the checkout on PYTHONPATH, and half the groups never touch ROS.
-       ohm_localization.paths.mecanum_lab_root() finds it as a checkout or an install prefix, and
-       install.sh --workspace builds both in the order they need. -->
 
   <test_depend>python3-pytest</test_depend>
 

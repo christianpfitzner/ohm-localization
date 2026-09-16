@@ -35,10 +35,10 @@ from types import SimpleNamespace
 def build_message(fields: dict, modules) -> object:
     """The dict from `gridmap.occupancy_grid()` as a message, using the classes it is given.
 
-    `modules` needs `OccupancyGrid`, `MapMetaData`, `Header`, `Vector3`, `Quaternion` and something with a
-    `Stamp`-shaped `time` (`builtin_interfaces.msg.Time`). Passing them in — rather than importing them at
-    the top of this file — is what lets `test/test_occupancy_grid.py` verify every field of the glue with
-    stubs on a machine where `nav_msgs` is not installed, and lets this module be *imported* there.
+    `modules` needs `OccupancyGrid`, `MapMetaData`, `Header`, `Pose`, `Point` and `Quaternion`, and only
+    the fields those messages really have. Passing them in rather than importing them at the top is what
+    lets `test/test_occupancy_grid.py` check the glue both against stubs that refuse an unknown field and,
+    when a ROS 2 is sourced, against `nav_msgs` itself — and lets this module be imported without ROS.
     """
     info = fields["info"]
     origin = info["origin"]
@@ -47,13 +47,12 @@ def build_message(fields: dict, modules) -> object:
     m.header.frame_id = str(fields["header"]["frame_id"])
     if fields["header"].get("stamp") is not None:
         m.header.stamp = fields["header"]["stamp"]
-    m.info = modules.MapMetaData()
-    m.info.map_load_time = None                       # not loaded from a file; built from the hall
-    m.info.resolution = float(info["resolution"])
-    m.info.layer = str(info.get("layer", "static"))
+    m.info = modules.MapMetaData()      # resolution, width, height, origin — and map_load_time, which
+    m.info.resolution = float(info["resolution"])   # keeps its default: this map was built, not loaded
     m.info.width, m.info.height = int(info["width"]), int(info["height"])
     m.info.origin = modules.Pose()
-    m.info.origin.position = modules.Vector3()
+    m.info.origin.position = modules.Point()   # a Pose's position is a Point. A Vector3 is accepted
+    # here and aborts the C serializer at publish time, somewhere else entirely.
     m.info.origin.position.x = float(origin["position"]["x"])
     m.info.origin.position.y = float(origin["position"]["y"])
     m.info.origin.position.z = float(origin["position"]["z"])
@@ -99,7 +98,7 @@ def main(argv=None) -> int:
 
     try:                                              # the message types, imported only when they are needed
         import rclpy
-        from geometry_msgs.msg import Pose, Quaternion, Vector3
+        from geometry_msgs.msg import Point, Pose, Quaternion
         from nav_msgs.msg import MapMetaData, OccupancyGrid
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import Header
@@ -113,7 +112,7 @@ def main(argv=None) -> int:
     # The classes `build_message` writes its fields on. A namespace rather than a class so that the test can
     # hand over stubs of exactly the same shape and neither side has to know which of the two it got.
     Types = SimpleNamespace(OccupancyGrid=OccupancyGrid, MapMetaData=MapMetaData, Header=Header,
-                            Pose=Pose, Vector3=Vector3, Quaternion=Quaternion)
+                            Pose=Pose, Point=Point, Quaternion=Quaternion)
     rclpy.init()
     node = rclpy.create_node("map_server")
     try:

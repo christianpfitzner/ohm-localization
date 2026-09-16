@@ -30,7 +30,9 @@ PACKAGE_XML = os.path.join(ROOT, "package.xml")
 
 def _module(path):
     with open(path, encoding="utf-8") as fh:
-        return ast.parse(fh.read(), filename=path)
+        tree = ast.parse(fh.read(), filename=path)
+    tree.origin = path                    # `_constant` names the file it looked in
+    return tree
 
 
 def _constant(tree, name):
@@ -38,7 +40,7 @@ def _constant(tree, name):
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets):
             return ast.literal_eval(node.value)
-    raise AssertionError(f"{os.path.basename(path)}: no module-level list `{name}`")
+    raise AssertionError(f"{os.path.basename(getattr(tree, 'origin', '?'))}: no module-level list `{name}`")
 
 
 def _source(path):
@@ -159,6 +161,25 @@ def test_the_package_is_named_the_same_in_every_file_that_names_it():
     # The ament resource marker: without it `ros2 pkg list` never sees a built package, and every
     # `ros2 launch <pkg> <file>` fails with "package not found" on a machine where the build succeeded.
     assert os.path.isfile(os.path.join(ROOT, "resource", "ohm_localization"))
+
+
+def test_the_package_manifest_parses_as_xml():
+    """A `package.xml` colcon cannot parse is a package that builds but cannot be launched.
+
+    colcon-ros identifies the build type by *parsing* this file; if the parse fails it falls back to the
+    plain python build, which installs the module and the scripts but never writes the
+    `ament_prefix_path` hook. `colcon build` then reports success, `import ohm_localization` works, and
+    `ros2 launch ohm_localization mcl.launch.py` answers "package not found" — because the install
+    prefix was never added to `AMENT_PREFIX_PATH`. The one XML rule that is easiest to break by
+    accident is that a comment may not contain two hyphens, which `install.sh --workspace` does.
+    """
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(_source(PACKAGE_XML).encode("utf-8"))
+    assert root.findtext("name") == "ohm_localization"
+    assert root.findtext("export/build_type") == "ament_python"
+    for dep in root.findall("exec_depend"):
+        assert (dep.text or "").strip(), "an empty <exec_depend> is not a dependency"
+    assert {d.text.strip() for d in root.findall("exec_depend")} >= {"rclpy", "nav_msgs", "launch"}
 
 
 def test_every_entry_point_leads_somewhere_and_is_documented():
@@ -291,8 +312,21 @@ def test_the_launch_file_is_just_data_when_launch_is_not_installed():
     spec = importlib.util.spec_from_file_location("mcl_launch", LAUNCH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    import asyncio
-    from launch.utilities import normalize_to_launch_descriptor
+    # Build what `ros2 launch` builds: the declared arguments, then the actions the OpaqueFunction
+    # returns for them. Constructing an action is where a wrong keyword argument or a renamed event
+    # handler shows up — parsing alone passes on a launch file that cannot start.
+    from launch.actions import DeclareLaunchArgument, OpaqueFunction
+    from launch.launch_context import LaunchContext
+    from launch.utilities import perform_substitutions
+    context = LaunchContext()
     description = mod.generate_launch_description()
     assert description.entities                       # arguments + the OpaqueFunction
-    assert normalize_to_launch_descriptor(description)
+    for entity in description.entities:
+        if isinstance(entity, DeclareLaunchArgument):
+            context.launch_configurations[entity.name] = perform_substitutions(
+                context, entity.default_value)
+    assert any(isinstance(entity, OpaqueFunction) for entity in description.entities)
+    actions = mod.setup(context)            # what the OpaqueFunction hands `ros2 launch`
+    assert actions, "setup() returned no actions at the file's own defaults"
+    kinds = [type(action).__name__ for action in actions]
+    assert "ExecuteProcess" in kinds, f"no process to start, only {kinds}"

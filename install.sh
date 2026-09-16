@@ -103,22 +103,75 @@ colcon_pass() {                     # $1 = self | workspace | ifaces
   colcon build --symlink-install --paths "${paths[@]}"
 }
 
+# --------------------------------------------------------------------- which ROS 2 to build and run with
+# `/opt/ros` often holds more than one distro, and a distro can be a `ros-base` install that cannot run this
+# package at all: no `ros2` CLI means no `ros2 launch`, no `launch_ros` means a launch file that cannot be
+# imported, no `nav_msgs` means a `map_server` that cannot start. Sorting them by what they can actually do —
+# rather than by a hard-coded distro name — is what makes the same script work on a lab machine with the
+# desktop install and on a laptop with two half installs.
+ros_candidates() {
+  local d
+  [ -n "${ROS_SETUP:-}" ] && [ -f "$ROS_SETUP" ] && printf '%s\n' "$ROS_SETUP"
+  [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ] \
+    && printf '%s\n' "/opt/ros/$ROS_DISTRO/setup.bash"
+  for d in /opt/ros/*/; do [ -f "${d}setup.bash" ] && printf '%s\n' "${d}setup.bash"; done
+}
+
+# One point per thing this package needs; 8+4 is the floor for `ros2 launch` to work.
+ros_score() {
+  local p="$1" s=0
+  [ -x "$p/bin/ros2" ] && s=$((s + 8))
+  [ -d "$p/share/launch_ros" ] && s=$((s + 4))
+  ls -d "$p"/lib/python3*/site-packages/rclpy >/dev/null 2>&1 && s=$((s + 2))
+  [ -d "$p/share/nav_msgs" ] && s=$((s + 1))
+  [ -d "$p/share/rosidl_default_generators" ] && s=$((s + 1))
+  echo "$s"
+}
+
+ros_needs() {                       # what this distro still lacks, as one line (empty = it can do everything)
+  local p="$1" out=""
+  [ -x "$p/bin/ros2" ] || out="ros2 CLI"
+  [ -d "$p/share/launch_ros" ] || out="$out launch_ros"
+  ls -d "$p"/lib/python3*/site-packages/rclpy >/dev/null 2>&1 || out="$out rclpy"
+  [ -d "$p/share/nav_msgs" ] || out="$out nav_msgs"
+  [ -d "$p/share/rosidl_default_generators" ] || out="$out rosidl_default_generators"
+  echo "${out# }"
+}
+
+ros_pick() {                        # the usable distro, as "<score> <setup.bash>"; nothing found -> empty
+  local best="" bestscore=-1 f p s seen=""
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    p="${f%/setup.bash}"; p="$(readlink -f "$p")"
+    case ":$seen:" in *":$p:"*) continue ;; esac; seen="$seen:$p"
+    s="$(ros_score "$p")"
+    if [ "$s" -gt "$bestscore" ]; then bestscore="$s"; best="$f"; fi
+  done < <(ros_candidates)
+  [ -n "$best" ] && echo "$bestscore $best"
+}
+
+ros_missing() {                     # the apt line for what a distro lacks (name = distro, package = thing)
+  local distro="$1" need="$2" pkg="ros-$distro-desktop"
+  case "$need" in
+    *rosidl*|*launch_ros*) pkg="ros-$distro-desktop" ;;
+    *nav_msgs*) pkg="ros-$distro-nav-msgs" ;;
+    *ros2*|*rclpy*) pkg="ros-$distro-ros-base" ;;
+  esac
+  echo "$pkg"
+}
+
 do_build() {
-  local setup=""
-  command -v colcon >/dev/null 2>&1 || command -v colcon >/dev/null 2>&1 || {
+  local picked setup
+  command -v colcon >/dev/null 2>&1 || {
     bad "colcon not on PATH (sudo apt install python3-colcon-common-extensions, or ~/.local/bin/colcon)"
     last 3; return 1; }
-  set +u
-  for f in "${ROS_SETUP:-}" "/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash" /opt/ros/jazzy/setup.bash \
-           /opt/ros/kilted/setup.bash /opt/ros/humble/setup.bash; do
-    if [ -n "$f" ] && [ -f "$f" ]; then setup="$f"; break; fi
-  done
-  set -u
-  if [ -z "$setup" ]; then
-    bad "no ROS 2 setup.bash to source (looked in \$ROS_SETUP, /opt/ros/\$ROS_DISTRO, jazzy, kilted, humble)"
+  picked="$(ros_pick)"
+  if [ -z "$picked" ]; then
+    bad "no ROS 2 under /opt/ros and no ROS_SETUP — build with: source /opt/ros/<distro>/setup.bash first"
     last 3; return 1
   fi
-  echo "building with $setup"
+  setup="${picked#* }"
+  echo "building with $setup  ($(ros_needs "${setup%/setup.bash}" | sed 's/^$/complete/'))"
   echo "------------------------------------------------------------------"
   set +u
   # shellcheck disable=SC1090
@@ -238,7 +291,7 @@ for t in tasks.values():
     for key in ("world", "drive", "rmse_max", "improvement_min", "max_error_max",
                 "rate_min", "contacts_max", "nees", "text", "checks", "mcl", "sim"):
         assert key in t, f"{t['id']}: no {key!r}"
-    assert 0.1 <= t["nees"][0] < t["nees"][1], f"{t['id']}: NEES band {t['nees']}"
+    assert 0.0 < t["nees"][0] < t["nees"][1], f"{t['id']}: NEES band {t['nees']}"
     assert t["kind"] == "kf" and t["sensor"] == "odom", f"{t['id']}: must be a kf task graded against odom"
     assert t["sim"].get("debug_truth") is True, f"{t['id']}: the grader needs debug_truth"
 print(f"  ok      task file: {len(tasks)} tasks, {sum(t['points'] for t in tasks.values())} points, "
@@ -247,12 +300,33 @@ PY
 then :; else bad "config/tasks_localization.json is not what the launcher expects"; last 4; fi
 
 # ----------------------------------------------------------------------------------- ROS (optional here)
-if [ "$want_ros" = 1 ] || [ -n "${ROS_DISTRO:-}" ] || ls /opt/ros >/dev/null 2>&1; then
-  if [ -n "${ROS_DISTRO:-}" ]; then ok "ROS 2 '$ROS_DISTRO' sourced"; elif ls /opt/ros/jazzy >/dev/null 2>&1; then
-    ok "ROS 2 jazzy under /opt/ros (LAB-CONCEPT's pin) — not sourced; MECANUM_ROS=0 will source it"
-  elif ls /opt/ros >/dev/null 2>&1; then warn "ROS under /opt/ros: $(ls /opt/ros | tr '\n' ' ')"
-  else warn "no ROS 2 found. Everything in the default path runs on the in-process stub bus (MECANUM_ROS=stub),
-         which is what the exercise is designed around; real DDS is a bonus, not a requirement"; fi
+# Not "is there a /opt/ros" but "is there one that can run this package", per distro: a base install has no
+# `ros2` CLI at all, and a machine can hold a base install and a desktop install side by side.
+if [ "$want_ros" = 1 ] || ls /opt/ros/*/setup.bash >/dev/null 2>&1 || [ -n "${ROS_DISTRO:-}" ]; then
+  found_ros=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    p="$(readlink -f "${f%/setup.bash}")"; [ -d "$p" ] || continue
+    found_ros=1
+    distro="$(basename "$p")"
+    need="$(ros_needs "$p")"
+    if [ -z "$need" ]; then
+      ok "ROS 2 '$distro' can run this package (ros2 CLI, launch_ros, rclpy, nav_msgs, rosidl)"
+    elif [ "$(ros_score "$p")" -ge 12 ]; then
+      warn "ROS 2 '$distro' runs launches but lacks: $need — map_server and the message package need it"
+    else
+      printf '  \033[33mnote\033[0m     ROS 2 %-8s cannot run this package: missing %s\n' \
+        "'$distro'" "$need"
+      echo "           grading and ./tools/run_lab.sh do not need ROS; for the ROS door:"
+      echo "             sudo apt install $(ros_missing "$distro" "$need")"
+    fi
+  done < <(ros_candidates)
+  if [ "$found_ros" = 0 ]; then
+    bad "no ROS 2 found. The graded path runs on the in-process bus and needs none; ros2 launch needs one"
+    last 3
+  elif [ "${ROS_DISTRO:-}" = "" ]; then
+    warn "no ROS sourced in this terminal — ros2 is not on the PATH until you source one"
+  fi
 fi
 
 # ---------------------------------------------------------------------------- build, when it was asked for

@@ -1,3 +1,7 @@
-Launch files land here (`mcl.launch.py`: the simulator plus `solution/mcl_node.py`, over real DDS).
-They are the second item of ../todo.md — not written yet, so nothing in this repository needs them to
-run: `tools/run_lab.sh` starts the same session on the in-process bus.
+# launch/
+
+One launch file: `mcl.launch.py` — the simulator, `mcl_node`, and the task's commanded drive, over real
+DDS. `ros2 launch ohm_localization mcl.launch.py --show-args` lists every argument; `rviz:=true` and
+`map:=true` add the viewer and the `/map` topic.
+
+Grading runs through `./tools/run_lab.sh grade …`, not through a launch file.

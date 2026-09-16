@@ -5,7 +5,7 @@ Run it as a controller and it answers in a few lines:
 
     tools/run_lab.sh grade --task mcl_production --controller tools/scan_probe.py
 
-Why this exists rather than a look at the code: the offline tests in `tests/` generate their scans
+Why this exists rather than a look at the code: the offline tests in `test/` generate their scans
 with `ohm_localization.synth.cast()` from the rectangles `gridmap.parse_grid()` read out of
 `worlds/*.txt`.  If either of the two conventions a LIDAR model has — which way the map's text rows
 run, and which way the beams sweep — is the opposite of the simulator's, the offline suite cannot
@@ -20,7 +20,8 @@ compares it with the synthetic scan of that same truth pose, for each convention
 beam difference is a few millimetres for the one that is right and metres for the ones that are not.
 
 It also prints the **message clock** of the three topics a stamp-driven node reads.  That is not a
-second question bolted on: the filter ticks on message stamps because `tools/fastgrade.py` runs the
+second question bolted on: the filter ticks on message stamps because the simulator's
+`tools/fastgrade.py` runs it
 simulator 25× faster than real time, and if a topic's stamp did not advance, such a node would simply
 never look at that sensor — the same 2.08 m symptom, from the opposite direction, and worth ruling
 out in the same run.

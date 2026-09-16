@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from conftest import MECANUM_LAB, needs_sim, free_pose           # noqa: F401
+from conftest import needs_sim, free_pose                    # noqa: F401
 from ohm_localization import synth
 from ohm_localization.gridmap import load_hall
 

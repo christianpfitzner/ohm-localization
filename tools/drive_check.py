@@ -2,7 +2,7 @@
 """Is a task's commanded drive driveable, and is the hall worth localising in? Offline, in a second.
 
     python3 tools/drive_check.py                        # every task in our own task file
-    python3 tools/drive_check.py mcl_rooms --clearance 0.4
+    python3 tools/drive_check.py mcl_wide --clearance 0.4
 
 A `kind: "kf"` task states the drive the grader will command, and two things can be wrong with it in a
 way no unit test can see.  It can hit a wall — which ends the run on `contacts_max` with the filter
@@ -23,7 +23,6 @@ the filter will use.  If the two ever disagree, `tools/scan_probe.py` is the arb
 """
 import argparse
 import json
-import math
 import os
 import sys
 
@@ -34,8 +33,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from ohm_localization import synth                                          # noqa: E402
-from ohm_localization.gridmap import (GridMap, load_hall, load_map,         # noqa: E402
-                                      mecanum_lab_dir)
+from ohm_localization.gridmap import load_map, mecanum_lab_dir   # noqa: E402
 
 TASK_FILE = os.path.join(ROOT, "config", "tasks_localization.json")
 ROBOT_RADIUS = 0.30        # m, chassis corner to the LIDAR at the centre: what must stay free
@@ -93,8 +91,8 @@ def check(task: dict, clearance: float, stride: int):
           f"one in {stride} → {used:4.0f} per update."
           f"{'' if fits else '   DRIVE DOES NOT FIT'}{note}")
     #  Only the drive can fail the check.  How informative a hall is is a fact the author should see
-    #  and may well have chosen on purpose — `mcl_arena` sits in an open hall because the exercise is
-    #  to notice the difference — so it is printed, not enforced.
+    #  and may well have chosen on purpose — a task may sit in an open hall precisely so that the
+    #  difference is visible — so it is printed, not enforced.
     return fits
 
 

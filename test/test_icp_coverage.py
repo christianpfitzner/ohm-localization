@@ -26,8 +26,13 @@ What the counts say on this checkout, and why the numbers are phrased as they ar
   median translation error 34.7 mm against a reported σ of 6.6 mm, and the 1σ box caught **0 of 120**
   runs. This is the number to quote when someone argues that the accuracy difference between the two
   variants does not matter — it is not 10 % of a σ, it is no coverage at all.
+* The target cloud is not free to thin. At `stride` 4 on 60 draws: **6.5 mm** median error with
+  `stride_dst` 1, **133 mm** with `stride_dst` 4, mean yaw error −0.005° against −0.404°. The wall normal
+  that point-to-line measures its residual along is fitted through target points; see
+  `test_the_target_cloud_is_not_free_to_thin`.
 
-Runtime: the structured block is ~1.1 s per mode and the corridor block ~6 s for both modes at 120 draws.
+Runtime: the structured block is ~1.1 s per mode, the `stride_dst` block ~2.3 s at 60 draws and the
+corridor block ~6 s for both modes at 120 draws.
 """
 import math
 import os
@@ -139,6 +144,49 @@ def test_point_to_point_reports_a_sigma_that_covers_nothing(structured_hall):
     assert np.median(err) > 0.020, \
         f"median error {np.median(err) * 1000:.1f} mm — the 5× -of-σ gap over its reported 6.6 mm σ " \
         f"(measured 34.7 mm) is what this test is about"
+
+
+def _stride_draws(hall, pose_a, pose_b, T_truth, stride_dst, draws=60, seed0=1000):
+    """(|error|, signed yaw error) of one structured pair at `stride` 4 with a `stride_dst` target."""
+    err, yaw = [], []
+    for k in range(draws):
+        sa = synth.scan_dict(pose_a, hall, sigma=SIGMA_BEAM, rng=np.random.default_rng(seed0 + k))
+        sb = synth.scan_dict(pose_b, hall, sigma=SIGMA_BEAM, rng=np.random.default_rng(4 * seed0 + k))
+        res = icp.register_scans(sa, sb, T_guess=T_truth, stride=4, stride_dst=stride_dst,
+                                 mode="line", sigma_z=SIGMA_BEAM)
+        e = icp.inverse(T_truth) @ res.T
+        err.append(math.hypot(float(e[0, 2]), float(e[1, 2])))
+        yaw.append(math.degrees(icp.triple_of(e)[2]))
+    return np.array(err), np.array(yaw)
+
+
+def test_the_target_cloud_is_not_free_to_thin(structured_hall):
+    """6.5 mm with a dense target, 133 mm with a thinned one: `stride_dst` is the expensive parameter.
+
+    Point-to-line fits each wall through the nearest *target* points and measures the residual along the
+    normal of that fit. Removing source beams only removes measurements. Removing target beams widens
+    the span the line is fitted through, so the fitted normal is tilted by the along-wall discretisation
+    — and a tilt enters the residual as a systematic error, the same sign on every draw, which is a bias
+    rather than noise. `register_scans` therefore thins the source with `stride` and leaves the target at
+    `stride_dst=1`.
+
+    Measured on 60 draws of the structured pair, both clouds at `stride` 4, σ_beam 20 mm: median error
+    6.5 mm against 133 mm, mean yaw error −0.005° against −0.404°. The failure mode this pins is someone
+    tidying the two parameters into one so a single `stride` thins both clouds.
+    """
+    _, _, T_truth, (pose_a, pose_b) = _pair(structured_hall)
+    err_dense, yaw_dense = _stride_draws(structured_hall, pose_a, pose_b, T_truth, 1)
+    err_thin, yaw_thin = _stride_draws(structured_hall, pose_a, pose_b, T_truth, 4)
+    assert np.median(err_dense) < 0.010, \
+        f"dense target: median error {np.median(err_dense) * 1000:.1f} mm — the accuracy of the pair moved"
+    assert np.median(err_thin) > 10 * np.median(err_dense), \
+        f"thinning the target cost {np.median(err_thin) / np.median(err_dense):.1f}× " \
+        f"(measured 20×): the wall fit stopped depending on the target cloud"
+    assert abs(yaw_dense.mean()) < 0.05, \
+        f"a dense target carries {yaw_dense.mean():+.3f}°/pair of yaw — the unbiased case is not unbiased"
+    assert abs(yaw_thin.mean()) > 0.2 and np.sign(yaw_thin.mean()) == np.sign(np.median(yaw_thin)), \
+        f"thinned target: mean {yaw_thin.mean():+.3f}°, median {np.median(yaw_thin):+.3f}° — " \
+        f"the systematic bias (measured −0.40°) went random or away"
 
 
 def _corridor_draws(grid, mode, slide=3.0, draws=DRAWS, seed0=1000):

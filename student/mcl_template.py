@@ -170,8 +170,9 @@ class ParticleFilter:
         Start from the loop in the comment below if that helps you get the geometry right, then make it
         fast — `TODO(L3)` is exactly the difference between the two.
 
-        #   ranges = np.asarray(scan["ranges"], float)[::BEAM_STRIDE]
-        #   angles = np.asarray(scan["angles"], float)[::BEAM_STRIDE]
+        #   idx    = np.arange(0, len(scan.ranges), BEAM_STRIDE)      # `scan` is a `Scan`: use attributes
+        #   ranges = np.asarray(scan.ranges, float)[idx]              # inf = this beam found nothing
+        #   angles = scan.angle_min + idx * scan.angle_increment      # body-frame bearing of each beam
         #   for k in range(self.n):                                  # 1200 × 107 of these is 1.5 s per scan
         #       x, y, th = self.x[k]
         #       … predicted range for each (x, y, th + angle) …
@@ -217,9 +218,8 @@ class ParticleFilter:
 
 
 def world_name(rob) -> str:
-    """Which hall this run is in — asked of the simulator, never hard-coded."""
-    info = rob.world() or {}
-    return str(info.get("name") or os.environ.get("OHM_HALL") or "production")
+    """Which hall this run is in — asked of the simulator on `/sim/world`, never hard-coded."""
+    return str((rob.world() or {}).get("name") or "production")
 
 
 def mission(rob, task):

@@ -63,6 +63,7 @@ setup(
     entry_points={"console_scripts": [
         "ohm-lab = ohm_localization.lab:main",                # ./lab, with this repo's task file
         "mcl_node = ohm_localization.mcl_node:main",
+        "drive_node = ohm_localization.drive_node:main",      # the commanded drive of a task
         "map_server = ohm_localization.map_server_node:main",
         "icp_odom_node = ohm_localization.icp_odom_node:main",
     ]},

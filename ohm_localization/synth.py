@@ -1,6 +1,6 @@
 """A synthetic 2D LIDAR and a synthetic drive, so the algorithms can be tested without a simulator.
 
-`test/` and `tools/mcl_offline.py` need scans.  Asking the simulator for them means a simulator, a
+`test/` and `tools/mcl_report.py` need scans.  Asking the simulator for them means a simulator, a
 clock and a robot; asking for them here means NumPy and a fixed seed, which is what lets the same
 test run on a laptop, in CI, and 200 times a second.  The ray cast is therefore a real slab test
 against the wall rectangles of `gridmap.py`, not a toy: the same rectangles the simulator casts its

@@ -173,11 +173,11 @@ def main(argv=None) -> int:
         if tid not in want:
             raise SystemExit(f"unknown task '{tid}'; the file has {', '.join(want)}")
 
-    keep = tempfile.mkdtemp(prefix="ohm-template-")
     rows = []
-    for tid in tasks:
-        print(f"grading template on {tid} …", flush=True)
-        rows.append(profile(tid, grade(tid, a.controller, a.sim, keep), want[tid]))
+    with tempfile.TemporaryDirectory(prefix="ohm-template-") as keep:
+        for tid in tasks:
+            print(f"grading template on {tid} …", flush=True)
+            rows.append(profile(tid, grade(tid, a.controller, a.sim, keep), want[tid]))
     print(f"\n{'task':>16} {'verdict':>8} {'rmse':>7} {'odom':>7} {'impr':>6} {'max':>7} {'Hz':>6} "
           f"{'NEES':>6}  missed")
     for r in rows:

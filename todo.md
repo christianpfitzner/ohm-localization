@@ -1,88 +1,74 @@
-# Status of the open items
+# todo
 
-Everything in the first version of this file is implemented, and the second list is what is genuinely left.
-Both lists carry the measurement or the file that settles each item, because a todo list whose entries are
-closed by intention rather than by evidence is a list of wishes.
+Original notes, kept as written:
 
-## Done since the last version of this file
+ROS
+- [x] fix install so `ros2 launch ohm_localization mcl.launch.py` works from a normal colcon workspace
+- [x] `colcon build` says success and then `ros2 launch` answers "package not found"
 
-### The package: `colcon build` in a workspace — the reason this round exists
-* `package.xml`, `setup.py`, `setup.cfg`, `resource/ohm_localization`: an `ament_python` package named
-  `ohm_localization`, installed as `share/ohm_localization/{config,launch,solution,student,docs}` with four
-  console scripts. `./install.sh --build` builds it in place (1.0 s), `./install.sh --workspace` builds
-  interfaces → `mecanum_lab` + `ohm_localization` + `ohm_frontier` (3 packages, 1.5 s), with the messages in a
-  pass of their own so that a partial ROS install cannot abort both exercises behind it. Measured in
-  `docs/verification.md` §11.
-* `ohm_localization/paths.py` answers "where is my data" in both layouts, and `gridmap.load_hall` asks the
-  simulator for its own hall text (`mecanum_lab.types.data_root`) instead of guessing a checkout — an
-  *installed* simulator used to mean "no such world 'production'". Verified from `/tmp` with a sourced
-  workspace and `HOME` moved away: all six halls load.
-* `launch/mcl.launch.py`, following the simulator's `kf.launch.py` idiom (sim + controller as two
-  `ExecuteProcess`, `headless:=`, `--set` overrides, rviz via `mecanum_lab.rviz_view`), plus the graded-over-ROS
-  caveat in its own docstring and a `LogInfo` at runtime when `grade:=` is used anyway.
-* `ohm_localization/lab.py` — `./lab` with our task file, reachable as `ros2 run ohm_localization ohm-lab` and
-  used by both the shell launcher and the launch file, so the task-file surgery happens in one place.
-* `test/test_packaging.py`: the installed branch tested against a **fake prefix**, the build tree refused as a
-  "checkout", entry points resolved to callables, launch arguments declared-vs-read, `--set` paths checked
-  against the simulator's config, the docstring's `…:=` examples checked against the declarations, and a real
-  `LaunchDescription` built where `launch_ros` exists (skips with that reason here).
+code
+- [x] remove unused code
+- [x] make examples for students with a low amount of code and low amount of external packages
+      (numpy only, ROS only for the node example)
 
-### Map as a ROS message
-* `gridmap.occupancy_grid()` / `gridmap.hall_from_occupancy_grid()` (dict in the middle, no `nav_msgs` needed
-  to test the geometry), `map_server_node.py` publishing a latched `/map`. Round trip exact in four halls;
-  origin, row order, unknown-vs-wall and truncation all asserted in `test/test_occupancy_grid.py`.
+Documentation
+- [x] one command per copy code environment; not multiple stuff
+- [x] remove reasoning from output readme
+- [x] less detail, no hints for the use of ai -- reasoning and stuff
 
-### The student side
-* `student/mcl_template.py`: everything given except the sensor model, and it **fails on purpose**.
-* `tools/template_check.py --record/--check` → `student/FAILURE.md`: which criteria it misses, per task, with
-  the numbers. `--check` is in `tools/check.sh --live`.
-* `docs/handout/exercises.pdf` (`tools/make_handout.py`), 8 pages, generated from the task file, drift-checked.
+## Resolved, with the run that says so
 
-### Two real bugs this round found, and what they cost
-* A step that does not translate has no bearing: the rotation noise was driven by `atan2` of the odometry's
-  own jitter, so a standing or spinning robot was charged 0.08 rad of heading noise per step. σ_θ after 10 s of
-  standing: 1.69 rad → 0.57 rad (floor 0.28). The four graded tasks improved to 15/15/17/35 mm and **two NEES
-  floors had to be widened** because a correct answer was 1.8× from failing. `docs/verification.md` §12.
-* ICP odometry chained the transform in the wrong direction: exact truth deltas integrated 4.9 m away from the
-  truth they came from. Now controlled by a test before any ICP number is believed. §13.
+| item | what it was | now |
+|---|---|---|
+| install / "package not found" | `package.xml` had `--workspace` inside an XML comment. `--` is illegal in a comment, so the file did not parse, colcon-ros never saw `build_type ament_python`, built it as a plain Python module and installed no `ament_prefix_path` hook — `colcon build` green, `ros2 launch` blind. | manifest parses (`test_the_package_manifest_parses_as_xml`); fresh workspace: `colcon build --symlink-install` rc 0, `ros2 pkg list` shows the package, `ros2 launch ohm_localization mcl.launch.py` rc 0 |
+| wrong ROS distro picked | `install.sh` took the first `/opt/ros/*` directory, which on this machine is a ros-base with no `ros2` CLI, no `launch_ros`, no `nav_msgs` | distros are scored on what the launch needs and the best is picked (kilted here); `--check` names what a partial distro is missing |
+| `install.sh --check` aborted | exit 4 on the repository's own task file: the NEES lower bound was written 0.1 where the file says 0.05 | `./install.sh --check` rc 0 |
+| launch showed the wrong hall | the node fell back to the simulator's config default (hall `maze`) because `/sim/world` had not arrived yet | waits for the topic; a 25 s launch prints `GridMap(production 80x48 @ 0.25 m field @0.1 m, 2736 free cells)` |
+| `ros2 launch` never returned | nothing watched the simulator's exit | `OnProcessExit` shuts the launch down when the simulator finishes |
+| `/map` was never published | `build_message` assigned a `Vector3` to `Pose.position` (the C serializer aborts) and set `info.layer`, a field `nav_msgs/MapMetaData` has never had. The stub in the test accepted any attribute, so the test was green | `Point`, no `layer`; a test builds the real `nav_msgs` message and calls `rclpy.serialization.serialize_message` |
+| the robot never moved under `ros2 launch` | `kf` tasks are driven by the grader, not by anything in the launch | `drive_node` plays the task's drive segments; `drive` argument, default true. 6.9 m of path in a 25 s launch |
+| a child died at shutdown | `ros2 launch` tears the graph down under a node still inside its wait set: pybind conversion error, and an `RCLError` for a publisher whose context went away | `spin_or_stop` in the node loops and a guarded publish: launch rc 0, `process has died` appears zero times. It does not ask `rclpy.ok()` — the in-process controller door never initialises rclpy, and that check cost 30 points before it was measured |
+| pytest died when a ROS was sourced | `launch_testing`'s pytest plugin is registered by the distro and fails validation | `setup.cfg` blocks the ROS plugins for this package's runs |
+| `map_server` over ROS, accuracy | unmeasured | `/map` latched 80×48 @ 0.25 m; example 04 measured against truth over DDS: **14 mm** KF RMSE against **274 mm** odometry (19.7×), 1044 poses published |
+| the graded door | still had to be shown to work | `PASS 30/30` — accuracy 0.015 m, improvement 12.47×, rate 34.1 Hz, NEES 0.19 |
 
-### Also
-* `icp_odom_node.py` (ICP as odometry, with the bias measurement that explains its drift), `mcl_report.py
-  --compare`, `tools/icp_eval.py --basin2d` (ASCII basins of attraction), 98 tests, README rewritten as
-  package documentation with a Quickstart, and `docs/verification.md` up to §14.
+## Code
 
-## What is left, and why it is not here
+Removed: `spread()`, `as_dict()` (both modules), the `prior == "odom"` branch, `center`, `UNKNOWN`,
+`MECANUM_LAB_DIR`, `_exp()`, `WIDTH`, a write-only `world_name`, a stray docstring sitting where a
+statement belonged, the `--with-ros` alias that did nothing, a `data_files` glob for `launch/*.yaml`
+that matched nothing, unused imports across `tools/` and `test/`, the leftover `tests/` directory and
+every `__pycache__`. Stale names fixed: `tools/mcl_offline.py` → `mcl_report.py`, `mcl_rooms` →
+`mcl_wide`, `tests/` → `test/`, `mcl.py`'s "the same choice icp.md §5.1 makes" → the measurement that
+makes it. `pyflakes ohm_localization/*.py examples/*.py tools/*.py` is clean.
 
-* **`ros2 launch … mcl.launch.py` has never been run.** This sandbox has no `ros2` CLI, no `launch_ros` and no
-  `nav_msgs`, so the launch file is verified by parsing and by building its description up to the ROS-specific
-  parts, and the entry points resolve. On a machine with a desktop ROS: run it, then `ros2 topic hz /alice/kf/pose`
-  (expect ≥ 5 Hz) and `ros2 topic echo /map --once`. Anything that fails there is a real finding for
-  `docs/verification.md` §11, which is written to receive it.
-* **Grading over DDS is documented as broken, not measured as broken here.** The simulator says a KF grade
-  taken over ROS scores `rate of kf/pose 0.0`; that number is *theirs*. `MECANUM_ROS=0 ./tools/run_lab.sh
-  grade …` on a full install is the one command that turns "the simulator documents this" into "we measured
-  it", and it should be recorded rather than quoted from the other repository.
-* **`rosidl` interfaces build:** fails in this sandbox (`rosidl_default_generators` absent), tolerated by
-  design, and `--workspace` prints why. On a full desktop it should build; nobody has seen it build here.
-* **L5 (ICP odometry as a graded task): deliberately not done.** The measured ceiling — 0.91–1.76 m over the
-  graded drive against 0.07–0.18 m of wheel odometry — is *worse than the baseline the grader compares
-  against*, so every threshold on it would grade the choice of method and not the quality of an implementation.
-  It is a node, a viva question with numbers, and `docs/icp.md` §7 instead. If it ever becomes a task, it needs
-  a different baseline (a GPS-denied drive, or `improvement` against a *deliberately crippled* odometry), and
-  the ceiling has to be measured before the threshold is written — that order, always.
-* **The 180-minute format is untested with humans.** Which of the four tasks a group actually finishes, and
-  whether the printed sheet is fillable in the time, is the largest unknown left, and no measurement in this
-  repository can substitute for one group sitting down with it.
-* **ROS 2 distro pin is still a decision nobody has made.** LAB-CONCEPT says Jazzy, the simulator's docs say
-  Kilted; `install.sh` sources whatever it finds and reports it. Harmless until a group's RViz behaves
-  differently from another's.
+Added, numpy only: `examples/01_map_and_scan.py`, `02_mcl_localisation.py`, `03_icp_scan_matching.py`;
+`04_mcl_ros_node.py` adds rclpy and nothing else. `examples/README.md` gives the one command for each and
+what it printed here.
 
-## Smaller things, if there is time
+Fixed while measuring the examples:
+- **ICP thinned only one cloud.** `register_scans` asked each cloud for `kwargs.pop("stride", 1)`; the
+  second ask found nothing. Honouring the promise is not a fix: thinning the *target* moved the pair from
+  6.0 mm to 133 mm and added +1.3°/step of yaw, because the wall normal is measured through the target
+  points. Now `stride` (source) and `stride_dst` (target), with a test that fails if they are merged back.
+- **A map read back from `/map` had no walls.** `hall_from_occupancy_grid` emitted one box per occupied
+  cell: 1104 boxes for `production` at 0.25 m, and a point 0.93 m inside a block reported −0.07 m. Merged
+  into maximal rectangles: 10 boxes, −0.93 m, the same ten boxes the hall text is made of, free space
+  agreeing to 1e-9. This is what took example 04 from metres to 14 mm.
 
-* `map_server` publishes no `/map_metadata` and no `map_server` *service*, so `nav2`'s own tools will not
-  recognise it as a map server. Deliberate: the topic is for RViz and for a group's own node, and the nav2
-  contract is the next exercise's problem.
-* `icp_eval.py --integrate` is currently `python3 -c` against a recording; the numbers are pinned by
-  `test/test_icp_odometry.py`, so this is convenience only.
-* `docs/*` are English with German task titles quoted from the task file; the handout inherits whichever the
-  task file holds. A German handout would be one flag in `make_handout.py` and needs the task file to carry both.
+## Documentation
+
+`README.md`: quickstart, one command per block, no reasoning, measured numbers kept. `launch/README.md`:
+7 lines, one command. `examples/README.md`: new. `docs/mcl.md` 158 → 134 lines, `docs/exercises.md`
+195 → 123 lines, one command per block, the reasoning voice gone, 22 commands checked against the
+repository. `docs/icp.md` §6 carries the stride table and `docs/verification.md` §8 the ledger entry for it.
+`python3 tools/make_handout.py --check`: 4 sheets match the task file.
+
+## Open
+
+- `tools/check.sh` is green (rc 0) but does not start a ROS graph, so nothing in CI covers `ros2 launch`.
+  The commands are in `README.md` §9 and were run by hand on this machine.
+- `install.sh --workspace` builds beside the package; a hand-run `colcon build` from a workspace root also
+  works and is what `README.md` shows. Both were verified; only the former prints the source line.
+- The 0.18 m disagreement inside a one-cell-wide stub (`test_the_row_order_survives_…`) is a property of
+  rasterising a 0.5 m hall, not a bug; the test says so and asserts where the robot can be.

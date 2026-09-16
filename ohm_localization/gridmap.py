@@ -64,7 +64,7 @@ def mecanum_lab_dir(explicit: str | None = None) -> str:
     Same search order as `install.sh --check`, so the answer a student gets from `--check` is the
     answer the code uses.  Nothing here imports ROS: `mecanum_lab` is a plain Python package.
     """
-    for cand in (explicit, os.environ.get("MECANUM_LAB"), os.environ.get("MECANUM_LAB_DIR")):
+    for cand in (explicit, os.environ.get("MECANUM_LAB")):
         if cand and os.path.isdir(os.path.join(cand, "worlds")):
             return os.path.abspath(cand)
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -325,10 +325,8 @@ def occupancy_grid(g: "GridMap", frame_id: str = "map", stamp=None) -> dict:
     data = np.ascontiguousarray(g.data, dtype=np.int8)
     return {
         "header": {"frame_id": frame_id, "stamp": stamp},
-        "info": {
-            "map_load_time": None,
-            "resolution": float(g.resolution),
-            "layer": "static",
+        "info": {                    # exactly the five fields of nav_msgs/MapMetaData, and `map_load_time`
+            "resolution": float(g.resolution),        # is the message's own default: nothing was loaded
             # origin: the corner the data starts at, which for this class is always (0, 0, 0) — the hall's
             # own world frame. Reading a map back from elsewhere shifts the other way, in `hall_from_...`.
             "origin": {"position": {"x": 0.0, "y": 0.0, "z": 0.0},
@@ -346,9 +344,12 @@ def hall_from_occupancy_grid(grid, name: str = "occupancy_grid") -> "Hall":
     keys — so the only difference between the two arguments is `msg.info` versus `grid["info"]`, handled
     once here rather than in every caller.
 
-    One rectangle per occupied cell, unmerged, which is what `parse_grid` produces too: merging runs of
-    cells into longer walls would change nothing about the geometry (the union is the same), and `Hall` is
-    read as a *set of boxes to measure distance to*, where fewer boxes is a speed win and nothing else.
+    Adjacent occupied cells are merged into maximal rectangles: the same area, measured as fewer boxes.
+    That is not a speed win but a correctness one — a wall tiled by one box per cell has no interior, so
+    `distance_to_walls` reports −0.07 m for a point 0.93 m inside a wall block, and a likelihood field
+    built on it barely punishes a particle whose beams end inside masonry. Merged, `production` at 0.25 m
+    goes from 1104 boxes to 10 — the hall's own 10 rectangles — and answers −0.93 m at that point, which is
+    what the hall text says.
     `-1` (unknown) is treated as *not a wall*: a map that does not know is not a map full of obstacles.
     Cells that are neither 0, 100 nor −1 (a probabilistic map from somewhere else) are walls from 50 up,
     the threshold `map_server` itself uses.
@@ -380,8 +381,41 @@ def hall_from_occupancy_grid(grid, name: str = "occupancy_grid") -> "Hall":
                          "corner — a column-major map or a truncated list lands here.")
     data = np.asarray(flat, dtype=np.int16).reshape(height, width)
     occupied = data >= 50                                   # 100 is a wall, -1 is unknown, 0 is free
-    rects = []
-    for row, col in zip(*np.nonzero(occupied)):
-        rects.append((ox + col * res, oy + row * res, ox + (col + 1) * res, oy + (row + 1) * res))
     return Hall(name=name, cell=res, size=(width * res, height * res),
-                rects=np.asarray(rects, dtype=float).reshape(-1, 4))
+                rects=_merge_runs(occupied, res, ox, oy))
+
+
+def _runs(flags: np.ndarray) -> list:
+    """The True runs of a 1-D boolean row as [start, stop) cell indices."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], flags.astype(np.int8), [0]))))
+    return [[int(a), int(b)] for a, b in zip(edges[0::2], edges[1::2])]
+
+
+def _merge_runs(occupied: np.ndarray, res: float, ox: float, oy: float) -> np.ndarray:
+    """Occupied cells as rectangles: horizontal runs, extended downward while the run below matches.
+
+    Greedy and maximal in y for each run span. Two rules make it exact rather than approximate: a run
+    joins the one above only when the two span exactly the same columns, and a run above can be joined
+    by at most one run below. The boxes that come out are therefore cell-disjoint and tile the occupied
+    cells, which is what makes the union the same area as the cell-by-cell union — no gap, no overlap.
+    """
+    open_rows, open_cols = [], []               # each box so far, as (row_start, row_stop, col_start, col_stop)
+    above = {}                                  # (col_start, col_stop) -> index of the box still open
+    for row, flags in enumerate(occupied):
+        current = {}
+        for col0, col1 in _runs(flags):
+            key = (col0, col1)
+            idx = above.pop(key, None)          # joining the box above consumes it: one joiner per box
+            if idx is None:
+                open_rows.append([row, row + 1])
+                open_cols.append([col0, col1])
+                idx = len(open_rows) - 1
+            else:
+                open_rows[idx][1] = row + 1     # the same span continues one row further down
+            current[key] = idx
+        above = current
+    if not open_rows:
+        return np.zeros((0, 4))
+    rows, cols = np.asarray(open_rows, dtype=float), np.asarray(open_cols, dtype=float)
+    return np.column_stack([ox + cols[:, 0] * res, oy + rows[:, 0] * res,
+                            ox + cols[:, 1] * res, oy + rows[:, 1] * res])
