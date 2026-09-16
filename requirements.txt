@@ -1,0 +1,3 @@
+numpy>=1.24
+# scipy is optional: tools/icp_eval.py uses a KD-tree when it is present, brute force otherwise.
+pytest>=7
