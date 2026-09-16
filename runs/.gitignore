@@ -1,0 +1,4 @@
+# Graded session logs and --json reports (`tools/check.sh --live`, the protocol citations).
+# Nothing in it is source; the file names carry the task and the date.
+*
+!.gitignore

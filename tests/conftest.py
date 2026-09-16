@@ -10,9 +10,17 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from ohm_localization import gridmap, synth                     # noqa: E402
-from ohm_localization.gridmap import GridMap, load_hall, parse_grid   # noqa: E402
+from ohm_localization.gridmap import (GridMap, corridor_text, load_hall,   # noqa: E402
+                           parse_grid)
 
 MECANUM_LAB = gridmap.mecanum_lab_dir()
+if MECANUM_LAB:
+    # On the path at *collection* time, not inside the tests that need it.  Without this line the
+    # cross-check tests pass or fail depending on which file pytest happened to run first, which is
+    # the worst kind of green: the one that failed here (`synth.cast` against the simulator's own ray
+    # caster) is the test that says whether every offline number in this repository means anything,
+    # and it was passing by borrowing a `sys.path` entry from an unrelated test's import.
+    sys.path.insert(0, MECANUM_LAB)
 needs_sim = pytest.mark.skipif(not MECANUM_LAB,
                                reason="mecanum-lab checkout not found (see install.sh --check)")
 
@@ -44,30 +52,6 @@ def drive():
     return true, odom
 
 
-def corridor_text(cols: int = 60, rows: int = 10, pillars: int = 0) -> str:
-    """A hall that is long, straight and empty, as text: 31 × 6 m with `pillars` every 4 m.
-
-    Two of the lessons in this exercise cannot be demonstrated in the simulator's halls because they
-    are not degenerate enough: a robot in `rooms` sees three walls and a doorway, so a scan match has
-    enough to lock on and behaves.  What ICP is actually weak at needs geometry with nothing in it —
-    a corridor whose ends are beyond the 8 m range, and a corridor whose features repeat.
-
-    Line 0 of the returned text is the top edge of the map (`parse_grid` mirrors it), so the long
-    walls are the first and last lines.  Writing them as the first and last *columns* instead — which
-    is what I did first, and which `parse_grid` then faithfully rendered — gives a hall open at both
-    ends with four stubs, and a distance query at its centre answers 12 m instead of 1.5 m.  That is
-    how this fixture came to check the map's own clearance in a test.
-    """
-    rows = max(rows, 6)
-    grid = [["#"] * (cols + 2)]
-    grid += [["#"] + ["."] * cols + ["#"] for _ in range(rows - 2)]
-    grid.append(["#"] * (cols + 2))
-    if pillars:                                                  # a post every 8 cells = every 4 m
-        for c in range(4, cols - 1, 8):
-            grid[2][c] = grid[rows - 3][c] = "#"
-    return "\n".join("".join(r) for r in grid)
-
-
 @pytest.fixture(scope="session")
 def bare_corridor():
     """31 × 6 m of nothing: the slide along it is not measured by anything in the scan."""
@@ -81,11 +65,6 @@ def pillar_corridor():
 
 
 def free_pose(hall, rng, margin=0.8):
-    """A pose that is inside the hall and not inside a wall — random poses otherwise sit in walls."""
-    from ohm_localization.gridmap import GridMap
-    g = GridMap(hall, resolution=0.25)
-    pick = rng.integers(0, len(g.free_xy), size=200)
-    for xy in g.free_xy[pick]:
-        if (margin < xy[0] < hall.size[0] - margin and margin < xy[1] < hall.size[1] - margin):
-            return (float(xy[0]), float(xy[1]), float(rng.uniform(-np.pi, np.pi)))
-    return None
+    """A pose on free floor — random poses otherwise sit in walls.  See `synth.random_pose`."""
+    return synth.random_pose(GridMap(hall), rng, margin=margin)   # clearance 0: `maze` has 1 m
+                                                   # corridors, no pose there is 0.8 m off a wall

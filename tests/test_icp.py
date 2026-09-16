@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from conftest import corridor_text                               # noqa: F401
+from ohm_localization.gridmap import corridor_text                # noqa: F401
 from ohm_localization import icp, synth
 from ohm_localization.gridmap import GridMap, load_hall, parse_grid
 
@@ -23,11 +23,7 @@ def _scan_pair(hall, a, b, sigma=0.02, seed=21):
             icp.relative(a, b), (a, b))
 
 
-def _mean_match(src, dst, T):
-    """Mean correspondence distance of one transform — the yardstick the fixtures measure with."""
-    moved = icp.transform(T, src)
-    idx = icp.nearest_neighbour(moved, dst)
-    return float(np.mean(np.linalg.norm(moved - dst[idx], axis=1)))
+_mean_match = icp.mean_match      # the library's, so the fixture and the tools ask the same question
 
 
 def _pair(hall):
@@ -116,7 +112,10 @@ def test_point_to_line_beats_point_to_point_on_the_same_pair(hall):
     neighbour matching between two fan-shaped clouds biases the answer — every point snaps to the
     closest stored point, which is systematically *along* the wall it came from — while the point-to-
     line residual only measures the distance to the surface, where the same snap is worth nothing.
-    The factor here is six in translation and two hundred in rotation, on identical input.
+    Measured on this pair: **6.2×** in translation and **263×** in rotation on identical input.
+    `tools/icp_eval.py --claims` also reports the median over ten random pairs — 6.6× in translation
+    but only 2.9× in rotation, because the rotation advantage needs a lever arm and a long wall, and
+    a claim about a method should be quoted at the number that reproduces when the pairs change.
     """
     a, b, truth, _ = _pair(hall)
     guess = truth @ icp.se2(0.2, -0.1, 0.1)

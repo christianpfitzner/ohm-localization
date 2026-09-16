@@ -196,3 +196,61 @@ def fake_odometry(true_path: np.ndarray, dt: float, scale: float = 1.03,
 
 def _wrap(a):
     return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def path_from_drive(drive, start=(0.0, 0.0, 0.0), dt: float = 0.05) -> np.ndarray:
+    """The grader's drive list as a path: the same `(vx, omega, duration)` blocks it commands.
+
+    A task of the `kind: "kf"` family says what the grader will command and the students only estimate,
+    so the *shape* of the drive is part of the task file — and if it does not fit the hall, the task
+    fails on `contacts_max` in the middle of the run with the filter innocent.  The simulator's own
+    drive list is a list of `{"vx":, "omega":, "duration":}` blocks with a `hold_time` pause between
+    them; this replays those blocks by dead reckoning from a start pose, which is how
+    `tools/drive_check.py` knows whether a task is driveable before 48 s of grading finds out.
+
+    Dead reckoning, deliberately: the physics adds slip and the wheels add their own model error, so
+    what this returns is what the *commanded* speeds imply.  A drive that only fits when the chassis is
+    perfect does not fit.
+    """
+    x, y, th = (float(v) for v in start)
+    out = [(x, y, th)]
+    for block in drive:
+        vx = float(block.get("vx", 0.0))
+        vy = float(block.get("vy", 0.0))
+        om = float(block.get("omega", 0.0))
+        for _ in range(max(int(round(float(block.get("duration", 0.0)) / dt)), 0)):
+            x += (vx * math.cos(th) - vy * math.sin(th)) * dt
+            y += (vx * math.sin(th) + vy * math.cos(th)) * dt
+            th = _wrap(th + om * dt)
+            out.append((x, y, th))
+        pause = float(block.get("hold_time", 0.0))
+        out += [out[-1]] * max(int(round(pause / dt)), 0)         # standing still is still a stretch
+    return np.array(out, dtype=float)
+
+
+def random_pose(grid, rng, margin: float = 0.6, clearance: float = 0.0) -> tuple | None:
+    """A pose on free floor, `margin` inside the hall's extents and `clearance` away from any wall.
+
+    Needed by the tests, by `tools/icp_eval.py` and by anything that wants a scan pair, and it is in
+    the library rather than in `tests/conftest.py` for a reason: a tool that imports its fixtures from
+    the test suite cannot be run by a student, and the first version of this lived in conftest and had
+    to be copied, which is how the copy drifted.
+
+    The two numbers are different requests and only the caller knows which one it wants.  `clearance`
+    asks for geometry that not every hall contains: the simulator's `maze` has **1.0 m corridors**, so
+    no pose in it is 0.8 m from a wall and a caller that insists gets `None` back — measured, not
+    guessed, and the reason its default is 0.0 rather than `margin`.  A test that compares beams against
+    the simulator wants free floor anywhere, `maze` included.  A scan pair that is meant to exercise a
+    matcher wants to be off the walls, because a pose 5 cm from a surface returns a scan that is nearly
+    all `range_min` and measures the clamp instead of the method under test.
+    """
+    cells = grid.free_xy
+    w, h = grid.hall.size
+    for _ in range(400):
+        xy = cells[int(rng.integers(len(cells)))]
+        x, y = float(xy[0]), float(xy[1])
+        if not (margin < x < w - margin and margin < y < h - margin):
+            continue                              # stay inside the hall, not merely inside a wall
+        if float(grid.distance_at(x, y)) >= clearance:
+            return (x, y, float(rng.uniform(-math.pi, math.pi)))
+    return None

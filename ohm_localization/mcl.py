@@ -58,11 +58,12 @@ class MclParams:
     alpha1: float = 0.05             # per rad, error growing with the two rotations
     alpha2: float = 0.05             # per m,   error growing with the distance driven
     alpha3: float = 0.05             # per rad, error growing with the closing rotation
-    noise_floor_xy: float = 0.01     # m,   scatter even at a standstill
-    noise_floor_theta: float = 0.02   # rad, the same for the heading
+    noise_rate_xy: float = 0.045     # m/√s,  scatter even at a standstill, per square root of time
+    noise_rate_theta: float = 0.09   # rad/√s, the same for the heading
     resample_below: float = 0.5      # fraction of N: N_eff under this triggers a resampling
     inject_below: float = 0.0        # fraction of N: random particles on a collapse (0 = off)
     sigma_floor: float = 0.01        # m/rad: a filter may not claim to know better than this
+    default_dt: float = 0.05         # s,   the step a bare pose triple is assumed to cover
     seed: int = 7
 
 
@@ -98,6 +99,7 @@ class MonteCarloLocaliser:
         self.last_neff = 1.0 / self.n * self.n          # = N before any weighting
         self.last_beams = 0
         self.last_odom = None
+        self.last_odom_t = None
 
     # -------------------------------------------------------------------------------- motion model
     def delta_from_odometry(self, prev, pose) -> tuple:
@@ -113,8 +115,21 @@ class MonteCarloLocaliser:
         rot2 = wrap(t - pt - rot1)
         return rot1, trans, rot2
 
-    def predict(self, rot1: float, trans: float, rot2: float) -> None:
+    def predict(self, rot1: float, trans: float, rot2: float, dt: float = 0.05) -> None:
         """One motion step for all particles: the same odometry reading, sampled differently.
+
+        `dt` is how much time this step covers, and it is an argument because the noise floor is a
+        *rate*.  The alphas need no such thing — they are proportional to the motion itself, so a step
+        that moves 1 cm contributes 1 cm of spread whether it arrives every 20 ms or every 200 ms.
+        The floor is different in kind: it is what a stationary robot's wheels still get wrong, and a
+        per-step σ for it silently means "per message".  Measured on one recording, with one set of
+        parameters: predicting once per scan (20 Hz) gave 0.20 m RMSE in `arena`; predicting on every
+        odometry message (50 Hz), which is what a node that follows the topics does, gave 1.26 m.  The
+        cloud had spread by √2.5 more per second for no reason but the message rate, and in a hall
+        where the LIDAR says little, nothing was left to pull it back in.  A rate divided by √dt is the
+        same physical statement at any topic rate, which is the only kind of parameter a student can
+        carry from this exercise to a real robot.
+
 
         Sampling — rather than applying one clean transform to every particle — is what lets the
         cloud spread again between two scans.  With the noise set to zero the particles move as one
@@ -123,9 +138,11 @@ class MonteCarloLocaliser:
         produce on request, which is why the noise is a parameter and not a constant.
         """
         p = self.p
-        s1 = math.hypot(p.alpha1 * abs(rot1) + p.alpha2 * trans, 0.0) + p.noise_floor_theta
-        s2 = p.alpha2 * trans + p.alpha1 * (abs(rot1) + abs(rot2)) + p.noise_floor_xy
-        s3 = math.hypot(p.alpha3 * abs(rot2) + p.alpha2 * trans, 0.0) + p.noise_floor_theta
+        floor_t = p.noise_rate_theta * math.sqrt(max(dt, 0.0))
+        floor_xy = p.noise_rate_xy * math.sqrt(max(dt, 0.0))
+        s1 = math.hypot(p.alpha1 * abs(rot1) + p.alpha2 * trans, 0.0) + floor_t
+        s2 = p.alpha2 * trans + p.alpha1 * (abs(rot1) + abs(rot2)) + floor_xy
+        s3 = math.hypot(p.alpha3 * abs(rot2) + p.alpha2 * trans, 0.0) + floor_t
         r1 = wrap(rot1 - self.rng.normal(0.0, s1, size=self.n))
         d = max(trans, 0.0) - self.rng.normal(0.0, s2, size=self.n)
         r2 = wrap(rot2 - self.rng.normal(0.0, s3, size=self.n))
@@ -134,14 +151,26 @@ class MonteCarloLocaliser:
         self.x[:, 2] = wrap(self.x[:, 2] + r1 + r2)
         self.steps += 1
 
-    def predict_odometry(self, pose) -> bool:
-        """Move by the odometry delta since the last call.  False on the first pose it ever sees."""
+    def predict_odometry(self, pose, dt: float | None = None) -> bool:
+        """Move by the odometry delta since the last call.  False on the first pose it ever sees.
+
+        `dt` is the time this step covers.  A pose carrying a `.t` (the simulator's `Odom`) supplies its
+        own, so a node that simply forwards each message gets the right figure without thinking; a bare
+        triple does not, and falls back on `default_dt` — which is why `tools/mcl_report.py` passes the
+        interval of the recording explicitly rather than trusting a default it did not choose.
+        """
         if self.last_odom is None:
             self.last_odom = _pose(pose)
+            self.last_odom_t = getattr(pose, "t", None)
             return False
+        if dt is None:
+            t = getattr(pose, "t", None)
+            dt = (t - self.last_odom_t) if (t is not None and self.last_odom_t is not None
+                                            and t > self.last_odom_t) else self.p.default_dt
+        self.last_odom_t = getattr(pose, "t", self.last_odom_t)
         prev = self.last_odom
         self.last_odom = _pose(pose)
-        self.predict(*self.delta_from_odometry(prev, pose))
+        self.predict(*self.delta_from_odometry(prev, pose), dt=dt)
         return True
 
     # -------------------------------------------------------------------------------- sensor model
@@ -283,6 +312,26 @@ class MonteCarloLocaliser:
         return k
 
     # ------------------------------------------------------------------------------------- estimate
+    def diversity(self, cell: float = 0.05) -> int:
+        """How many `cell`-metre boxes of the floor the cloud actually stands in.
+
+        N_eff counts particles; this counts *places*, and the two part company as soon as resampling
+        begins copying the same particle.  Measured on a converged run in `production`: N_eff reports
+        1200 — every weight equal, because a duplicate predicts exactly the same beams as its
+        original — while the whole cloud occupies about forty 5 cm boxes of a 20 × 12 m hall.  Neither
+        number is wrong and neither one alone is the answer: N_eff is about the weights, this is about
+        the coverage, and a filter holding 1200 copies of one pose is not the filter the lecture's
+        formula was written to describe.  Which is why a report that shows only N_eff can show a
+        healthy filter that has in fact stopped exploring.
+
+        It is a method and not part of `estimate()` because it sorts: two hundred microseconds in a
+        filter that takes four milliseconds an update is five per cent of the exercise, and the
+        question it answers is asked twenty times a second, not once.
+        """
+        if not len(self.x):
+            return 0
+        return int(len(np.unique(np.round(self.x[:, :2] / float(cell)).astype(np.int64), axis=0)))
+
     def estimate(self) -> dict:
         """Weighted mean and spread of the cloud — the numbers that go on `/<robot>/kf/pose`.
 

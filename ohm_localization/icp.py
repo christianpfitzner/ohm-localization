@@ -149,6 +149,25 @@ def nearest_neighbour(src: np.ndarray, dst: np.ndarray, method: str = "brute",
     return out
 
 
+def mean_match(src: np.ndarray, dst: np.ndarray, T: np.ndarray,
+               max_corr: float | None = None) -> float:
+    """Mean correspondence distance of `src` onto `dst` **at a given transform** — what ICP minimises.
+
+    Two uses, and the second is the reason it is in the library rather than in a test.  First, as a
+    fixture yardstick: if the truth does not fit a pair of scans well, the pair is a bad pair and any
+    number measured on it is noise.  Second, asked *at the aliased pose*: in a corridor with posts
+    every 4 m, a slide of exactly one period fits the scan as well as the truth does — often better,
+    since it also cancels part of the noise.  Then ICP is not broken, it did its job, and the fitness
+    value it reports is a true statement about a wrong pose.  `max_corr` mirrors the gate the solver
+    used, so the number means the same thing as `IcpResult.fitness`.
+    """
+    moved = transform(T, src)
+    d = np.linalg.norm(moved - dst[nearest_neighbour(moved, dst)], axis=1)
+    if max_corr is not None:
+        d = d[d <= max_corr]
+    return float(np.mean(d)) if len(d) else float("nan")
+
+
 def _line_params(src: np.ndarray, dst: np.ndarray, idx: np.ndarray, k: int) -> np.ndarray:
     """Point and unit normal of the line fitted to the `k` nearest neighbours of each correspondence.
 

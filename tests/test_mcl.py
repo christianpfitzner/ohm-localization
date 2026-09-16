@@ -125,7 +125,7 @@ def test_a_cloud_that_can_only_shrink_walks_into_a_wrong_pose(hall):
     """
     live, rigid = _run(hall), _run(hall, params=MclParams(
         particles=1200, beam_stride=3, alpha1=0.0, alpha2=0.0, alpha3=0.0,
-        noise_floor_xy=0.0, noise_floor_theta=0.0))
+        noise_rate_xy=0.0, noise_rate_theta=0.0))
     assert rigid.rmse > live.rmse * 5.0, (f"no motion noise gave {rigid.rmse:.3f} m against "
                                           f"{live.rmse:.3f} m with it — the exercise lost its point")
     assert rigid.nees > 50.0, f"and it admitted the doubt (NEES {rigid.nees:.1f})?"
@@ -278,3 +278,43 @@ def test_the_mean_of_two_opposite_particles_is_not_the_average(hall):
                             rng=np.random.default_rng(1))
     f.x = np.array([[6.0, 8.0, math.radians(170.0)], [6.0, 8.0, math.radians(-170.0)]])
     assert abs(abs(f.estimate()["theta"]) - math.pi) < 0.05
+
+
+def test_ten_seconds_of_standing_still_spreads_the_cloud_the_same_at_any_topic_rate(hall):
+    """The motion-noise floor is a **rate** (m/√s), not a per-message σ.
+
+    This one cost a day and a wrong exercise.  The first version added `noise_floor_xy` to every
+    `predict()` call, which reads innocently and means "per message": a node that predicts on each
+    odometry sample (50 Hz) diffused √2.5 times faster per second than the offline replay that
+    predicts once per scan (20 Hz).  Same parameters, same hall, same drive — 0.20 m there and 1.26 m
+    here, and the live figure looked like a filter that could not localise.  A real chassis does not
+    know how often its encoders are read, so the parameter is now a rate and `dt` decides how much of
+    it a step gets.
+    """
+    spread = []
+    for hz in (20.0, 200.0):
+        f = MonteCarloLocaliser(GridMap(hall),
+                                MclParams(particles=4000, alpha1=0.0, alpha2=0.0, alpha3=0.0,
+                                          noise_rate_xy=0.05, noise_rate_theta=0.0),
+                                pose=(6.0, 8.0, 0.0), sigma=(0.0, 0.0, 0.0),
+                                rng=np.random.default_rng(3))
+        f.last_odom = (6.0, 8.0, 0.0)                  # as if the first pose had already arrived
+        for _ in range(int(10 * hz)):                  # ten seconds of an unmoving robot
+            f.predict_odometry((6.0, 8.0, 0.0), dt=1.0 / hz)
+        spread.append(f.estimate()["sx"])
+    assert spread[0] == pytest.approx(0.05 * math.sqrt(10.0), rel=0.25)   # rate × √time, not per step
+    assert spread[0] / spread[1] == pytest.approx(1.0, rel=0.15)          # and independent of the rate
+
+
+def test_a_pose_that_carries_its_own_stamp_needs_no_told_dt(hall):
+    """The simulator's `Odom` has a `.t`, so a node that just forwards messages gets `dt` right."""
+    from types import SimpleNamespace
+
+    f = MonteCarloLocaliser(GridMap(hall),
+                            MclParams(particles=4000, alpha1=0.0, alpha2=0.0, alpha3=0.0,
+                                      noise_rate_xy=0.05, noise_rate_theta=0.0),
+                            pose=(6.0, 8.0, 0.0), sigma=(0.0, 0.0, 0.0),
+                            rng=np.random.default_rng(4))
+    f.predict_odometry(SimpleNamespace(x=6.0, y=8.0, theta=0.0, t=0.0))
+    f.predict_odometry(SimpleNamespace(x=6.0, y=8.0, theta=0.0, t=2.0))    # two seconds, one message
+    assert f.estimate()["sx"] == pytest.approx(0.05 * math.sqrt(2.0), rel=0.25)

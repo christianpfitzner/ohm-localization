@@ -109,6 +109,31 @@ def load_hall(name: str, cell: float | None = None, mec_dir: str | None = None) 
         "Pass --sim DIR or set MECANUM_LAB (see install.sh --check).")
 
 
+def corridor_text(cols: int = 60, rows: int = 10, pillars: int = 0) -> str:
+    """A hall that is long, straight and empty, as map text: 31 × 6 m, posts every 4 m if asked.
+
+    The simulator's halls are all too *interesting* to demonstrate what ICP is weak at.  A robot in
+    `rooms` sees three walls and a doorway, so a scan match has plenty to lock on and behaves; the two
+    failure modes worth teaching need geometry with nothing in them — a corridor whose ends are beyond
+    the 8 m range, so the slide along it is invisible, and a corridor whose features repeat, so the
+    slide is visible four times over and the match cannot tell which.  Hence a generator rather than a
+    fifth hall file in somebody else's repository.
+
+    Line 0 of the text is the top edge (`parse_grid` mirrors it), which makes the long walls the first
+    and last *lines*.  Writing them as the first and last columns instead — my first attempt — gives a
+    hall open at both ends with four stubs, and a clearance query at its centre then answers 12 m
+    instead of 1.5 m: `tests/test_icp.py` checks the fixture's own clearance for that reason.
+    """
+    rows = max(rows, 6)
+    grid = [["#"] * (cols + 2)]
+    grid += [["#"] + ["."] * cols + ["#"] for _ in range(rows - 2)]
+    grid.append(["#"] * (cols + 2))
+    if pillars:                                                 # a post every 8 cells = every 4 m
+        for c in range(4, cols - 1, 8):
+            grid[2][c] = grid[rows - 3][c] = "#"
+    return "\n".join("".join(r) for r in grid)
+
+
 def parse_grid(text: str, cell: float = DEFAULT_CELL, name: str = "?") -> Hall:
     """ASCII hall -> wall rectangles, following the simulator's convention exactly.
 

@@ -1,0 +1,389 @@
+{
+  "_comment": "Tasks for the localisation exercise (MCL), graded by the simulator's own `kind: \"kf\"` grader. The file is shaped exactly like the simulator's config/tasks.json — one source for thresholds and handout text — and is read by that grader through tools/lab_grade.py, which points tasks.TASKS_PATH here instead of editing the simulator's own config. `sensor: \"odom\"` is what makes the graded improvement be measured against raw odometry instead of GPS (_probe in mecanum_lab/grade.py), which is the comparison this exercise is about; no change to the simulator was needed for it. The `odom` block matters as much as the thresholds: in the simulator's default profile the wheel odometry of this drive is 6 mm from the truth, and a localiser cannot earn a factor of two against that — the improvement a localisation task grades has to be measured against an odometry that drifts the way the laboratory robot's does, which is what `geometry.scale_xy` (a path that is 3 % too long) and `bias_omega` are for. Measured with tools/record_scans.py and reported by tools/mcl_report.py; `contacts_max` still keeps the drive out of the walls. `mcl_production` is the first task and it is named for its hall, `production`: the hall the wheel-kinematics experiment uses, 20 × 12 m with obstacles inside, is also the best hall this exercise has — 323 of 360 beams find a wall there against 102 in `arena`, which is the whole difference between a filter that converges and one that wanders (see L4). The `mcl` block is not read by the grader: it is what solution/mcl_node.py looks up for the running task, so a task that asks for a wider prior or a smaller cloud needs one edit here and none in the node. Thresholds are measured, not decided: docs/verification.md has the runs they came from, and every one of them is a number this checkout reproduces. L4 changes the sensor rather than the hall: `arena` turns out not to be gradeable for this exercise — with 99 echoing beams the best this filter reaches over a 53 s drive is 1.12× the odometry, and only by setting σ_z to 1.0 m, which is the filter saying it does not believe the LIDAR. Numbers a task can only grade at 1.1× grade the hall and not the work, so the open-hall result is a measured finding in docs/verification.md and a column in tools/drive_check.py instead of a threshold.",
+  "pass_from": 50,
+  "order": [
+    "mcl_production",
+    "mcl_wide",
+    "mcl_budget",
+    "mcl_dirty"
+  ],
+  "tasks": [
+    {
+      "id": "mcl_production",
+      "title": "L1 — Where am I? Monte-Carlo localization against the map",
+      "points": 30,
+      "experiment": 2,
+      "kind": "kf",
+      "world": "production",
+      "timeout": 90,
+      "warmup": 4.0,
+      "sensor": "odom",
+      "estimate": "kf",
+      "repeat": 1,
+      "drive": [
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        }
+      ],
+      "sim": {
+        "debug_truth": true,
+        "truth": {
+          "rate": 20.0
+        },
+        "odom": {
+          "sigma_xy": 0.01,
+          "sigma_theta": 0.006,
+          "bias_omega": 0.004,
+          "geometry": {
+            "scale_xy": 1.03
+          }
+        },
+        "lidar": {
+          "rate": 20.0
+        }
+      },
+      "mcl": {
+        "particles": 1200,
+        "beam_stride": 3,
+        "sigma_z": 0.15,
+        "prior_sigma": 0.5
+      },
+      "rmse_max": 0.05,
+      "improvement_min": 5.0,
+      "max_error_max": 0.25,
+      "rate_min": 5.0,
+      "contacts_max": 0,
+      "nees": [
+        0.1,
+        5.0
+      ],
+      "text": "The grader drives; you estimate. This time the improvement is measured against your **odometry**, not against GPS — the wheels are the sensor that is already fused into the pose you start with, and beating them is the whole claim of the exercise. One scan every twentieth of a second, 360 beams, and a map you did not build: draw N samples from the belief you were given, move them by the odometry, weight each by how well its predicted beams fit the walls, and resample when the weights stop being spread out. Report the mean and the 1σ on `/<robot>/kf/pose` — the σ is graded (NEES), so a cloud that is wide enough to hide in is not a passing answer.",
+      "checks": [
+        "Particles are moved by the odometry's own delta (rot1, translate, rot2), not teleported to the odometry pose",
+        "Weight of a particle from the map: predicted beam end points compared against the distance field",
+        "N_eff = 1/Σw² as the trigger for resampling, and the resampling does not happen on every scan",
+        "kf/pose with sx/sy from the spread of the cloud, not a constant"
+      ],
+      "hints": [
+        "Beam angles: `angle_min + i·angle_increment + theta` of the particle — a beam that keeps the robot's heading instead of the particle's weights every hypothesis as if it were the odometry.",
+        "Use the beams that are left after you drop `inf`; with σ_z = 0.15 m and ~110 usable beams a particle inside a wall and one on the correct pose differ by dozens of orders of magnitude, which is why the weights are summed in log form.",
+        "The scatter you add at the motion step is not decoration: with zero motion noise the cloud can only shrink, and the filter ends up certain about the odometry's own drift.",
+        "σ from the cloud is the weighted standard deviation around the circular mean of the heading — the arithmetic mean of +170° and −170° points the wrong way."
+      ]
+    },
+    {
+      "id": "mcl_wide",
+      "title": "L2 — Parked somewhere else: localisation from a 2 m prior",
+      "points": 35,
+      "experiment": 2,
+      "kind": "kf",
+      "world": "production",
+      "timeout": 90,
+      "warmup": 4.0,
+      "sensor": "odom",
+      "estimate": "kf",
+      "repeat": 1,
+      "drive": [
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        }
+      ],
+      "sim": {
+        "debug_truth": true,
+        "truth": {
+          "rate": 20.0
+        },
+        "odom": {
+          "sigma_xy": 0.01,
+          "sigma_theta": 0.006,
+          "bias_omega": 0.004,
+          "geometry": {
+            "scale_xy": 1.03
+          }
+        },
+        "lidar": {
+          "rate": 20.0
+        }
+      },
+      "mcl": {
+        "particles": 1200,
+        "beam_stride": 3,
+        "sigma_z": 0.15,
+        "prior_sigma": 2.0
+      },
+      "rmse_max": 0.06,
+      "improvement_min": 3.0,
+      "max_error_max": 0.35,
+      "rate_min": 5.0,
+      "contacts_max": 0,
+      "nees": [
+        0.1,
+        8.0
+      ],
+      "text": "Same hall, same drive, and the robot was not where the odometry claims: the prior around the start pose has a 1σ of two metres instead of half a metre, so the true pose is in the cloud but surrounded by a thousand wrong neighbours. What has to survive is the weighting — the first scans have to throw away the neighbours. `max_error` is the number that grades the beginning of the run rather than its average: a filter that takes eight seconds to find the robot has a good RMSE and a useless first eight seconds.",
+      "checks": [
+        "The initial cloud is drawn from the prior of the task, not placed on the odometry pose with zero spread",
+        "The first scans reduce N_eff and then the resampling concentrates the cloud (watch it in RViz/the window)",
+        "No use of /<robot>/truth, and no GPS: this task is decided by the LIDAR and the map",
+        "Report of how many scans the first 25 cm took — from the counters on kf/info, not from a stopwatch"
+      ],
+      "hints": [
+        "A prior that is too narrow is not optimism, it is a different filter: if no particle is within σ_z of the true pose, no amount of weighting will find it.",
+        "Look at N_eff while it converges. Falling and then rising again is the shape of a filter that found the robot; sitting at 1 is a filter that found one lucky particle instead.",
+        "If you are tempted to add random particles to make this pass: measure what that costs in L1 first (see docs/mcl.md) — injection is a recovery mechanism, not a performance knob."
+      ]
+    },
+    {
+      "id": "mcl_budget",
+      "title": "L3 — Same accuracy, a quarter of the particles: where the budget belongs",
+      "points": 35,
+      "experiment": 2,
+      "kind": "kf",
+      "world": "production",
+      "timeout": 90,
+      "warmup": 4.0,
+      "sensor": "odom",
+      "estimate": "kf",
+      "repeat": 1,
+      "drive": [
+        {
+          "vx": 0.3,
+          "duration": 8
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 8
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 8
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 8
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 8
+        }
+      ],
+      "sim": {
+        "debug_truth": true,
+        "truth": {
+          "rate": 20.0
+        },
+        "odom": {
+          "sigma_xy": 0.01,
+          "sigma_theta": 0.006,
+          "bias_omega": 0.004,
+          "geometry": {
+            "scale_xy": 1.03
+          }
+        },
+        "lidar": {
+          "rate": 20.0
+        }
+      },
+      "mcl": {
+        "particles": 250,
+        "beam_stride": 1,
+        "sigma_z": 0.15,
+        "prior_sigma": 0.5
+      },
+      "rmse_max": 0.07,
+      "improvement_min": 3.0,
+      "max_error_max": 0.3,
+      "rate_min": 5.0,
+      "contacts_max": 0,
+      "nees": [
+        0.1,
+        12.0
+      ],
+      "text": "The task file now says 250 particles and **every** beam instead of one in three — a quarter of the particles for nearly the same accuracy, and 3× the beams per particle. Both settings cost the same per scan (particles × beams is the product that sets the load), so this is the same computation spent differently, and the accuracy you get for it is not the same: 360 beams constrain a pose far more sharply than 1200 particles cover a hall. The thresholds below are L1's, loosened by as much as a quarter of a cloud measurably costs — that difference is itself a result worth a line in your protocol. Run `tools/mcl_report.py --timing` on your own filter and hand in the table of what each knob costs.",
+      "checks": [
+        "One update: all particles and all beams in vectorised NumPy, no Python loop over particles",
+        "The product particles × beams as the cost of one update, measured rather than estimated",
+        "What broke first when the particles were taken away: N_eff, the RMSE, or the maximum error",
+        "A short answer to why 360 beams are not 360 independent measurements of a hall"
+      ],
+      "hints": [
+        "The work of one update is (particles × beams) gathers in the distance field. Halving one factor and tripling the other keeps the work the same and changes what the filter is good at.",
+        "Fewer particles means a coarser sampling of the pose space: σ_z controls how forgiving the likelihood is about that coarseness, and it is the knob that lets 250 particles find a 1 cm peak.",
+        "Report N_eff for both settings. If it did not go down with a quarter of the cloud, the resampling is doing something you did not intend."
+      ]
+    },
+    {
+      "id": "mcl_dirty",
+      "title": "L4 — The window is dirty: make the model match the sensor",
+      "points": 30,
+      "experiment": 2,
+      "kind": "kf",
+      "world": "production",
+      "timeout": 90,
+      "warmup": 4.0,
+      "sensor": "odom",
+      "estimate": "kf",
+      "repeat": 1,
+      "drive": [
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        }
+      ],
+      "sim": {
+        "debug_truth": true,
+        "truth": {
+          "rate": 20.0
+        },
+        "odom": {
+          "sigma_xy": 0.01,
+          "sigma_theta": 0.006,
+          "bias_omega": 0.004,
+          "geometry": {
+            "scale_xy": 1.03
+          }
+        },
+        "lidar": {
+          "rate": 20.0,
+          "sigma": 0.25
+        }
+      },
+      "mcl": {
+        "particles": 1200,
+        "beam_stride": 1,
+        "sigma_z": 0.5,
+        "z_rand": 0.04,
+        "prior_sigma": 0.5,
+        "noise_rate_xy": 0.045,
+        "noise_rate_theta": 0.09,
+        "sigma_floor": 0.01
+      },
+      "rmse_max": 0.07,
+      "improvement_min": 2.5,
+      "max_error_max": 0.2,
+      "rate_min": 5.0,
+      "contacts_max": 0,
+      "nees": [
+        0.3,
+        5.0
+      ],
+      "text": "The same hall, the same drive and the same filter as L1, with one change you will not see in the topic: the LIDAR's σ is 0.25 m instead of 0.015 m — a reflective, partially covered window, which on a real robot is a Tuesday. The parameters that won L1 were tuned against a clean sensor and they will not survive this one. Not because the filter is broken, but because σ_z is not a knob on the filter, it is a claim about the sensor: weight a 250 mm measurement as if it were a 150 mm measurement and the cloud collapses onto whatever the first dirty beams liked, and the reported σ becomes a lie even while the position happens to stay reasonable. Find parameters that work with this sensor and write down which one you changed and why that one.",
+      "checks": [
+        "RMSE and improvement over the raw odometry, with the parameters that achieved them",
+        "NEES: does your σ describe your error now, and what happened to it when you changed σ_z",
+        "A σ_z sweep — at least four values, one number each — as a table in the protocol",
+        "Why σ_z ≈ 0.5 m works better here than σ_z = 0.25 m, which is the σ the sensor actually has",
+        "What `z_rand` costs you when the sensor is this noisy"
+      ],
+      "hints": [
+        "The measurement noise is in the task's `sim` block, and the grader checks that the run really used it: `lidar.sigma` is 0.25 m. Read it off the config rather than assuming 0.015 m — a filter that asks the bus what its sensor can do is a filter that survives a sensor change.",
+        "σ_z enters the weight of every beam, so it is the parameter this task is about. Everything else can stay where L1 left it.",
+        "Measured on this recording, for comparison once you have your own numbers: σ_z 0.15 → 96 mm and NEES ~15; σ_z 0.30 → 62 mm; σ_z 0.50 → 49 mm and NEES 2.2; σ_z 0.80 → 62 mm. There is a minimum in there, and it is near 2·σ_sensor rather than at σ_sensor.",
+        "`tools/mcl_report.py` replays a recording in seconds, so a sweep of four σ_z values is a loop, not four lab sessions."
+      ]
+    }
+  ]
+}

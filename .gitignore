@@ -1,9 +1,5 @@
 __pycache__/
-*.pyc
-build/
-install/
-log/
-runs/*.jsonl
-runs/*.npz
+*.py[cod]
 .pytest_cache/
-.venv/
+/tmp/
+*.jsonl
