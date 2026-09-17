@@ -158,10 +158,6 @@ def integrate(scans, odom=None, mode=MODE, stride=STRIDE, sigma_z=SIGMA_Z, guess
     return out
 
 
-def world_name(rob) -> str:
-    return str((rob.world() or {}).get("name") or "production")
-
-
 def mission(rob, task):
     """Publish the stitched pose on `kf/pose` for as long as this task runs."""
 

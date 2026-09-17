@@ -331,6 +331,15 @@ green test suite, and none was visible from the code that contained it.
     added +1.3°/step of yaw (§6's stride table). Caught by four coverage and odometry tests failing on the
     one-line change; `stride_dst` and `test_the_target_cloud_is_not_free_to_thin` keep it from being tidied
     back.
+13. **`PoseStamped` is not in `nav_msgs`.** The view's publisher asked for it there, and the launch answered
+    with one line on stderr — `view: /particles and /kf/path stay off (ImportError …)` — while everything
+    else in the run behaved perfectly. The guard that makes that line non-fatal is the right guard for a
+    shutdown and the wrong one for a typo, so the offline suite could not see it either: it skips the ROS
+    door without a sourced ROS. What catches it now is
+    `test_the_two_topics_are_named_for_this_robot_and_carry_real_messages`, which runs only with the message
+    packages present and calls `rclpy.serialization.serialize_message` on both — the check that catches a
+    field of the wrong message type too, which is how the `/map` `Vector3` was found
+    (`test/test_occupancy_grid.py`, `map_server_node.py`).
 
 ## 9. Soft spots, stated plainly
 
@@ -532,3 +541,113 @@ indistinguishable from a working one in the plumbing, which is why "0 points" is
 a template and the *criterion names* are what this tool records.
 
 **Not measured:** whether a group finishes the sheet in 180 minutes.
+
+## 15. The RViz view: what the window shows, and what the topics cost
+
+The launch's default is `rviz:=auto`, `map:=auto`. Both were measured on this machine, on the documented
+command, with a headless X server (`Xvfb`) standing in for the lab's screen — the display is the only thing
+`xvfb-run` buys here, every topic, QoS number and exit code below is the real graph:
+
+```bash
+ros2 launch ohm_localization mcl.launch.py          # everything default
+```
+
+**The window is the exercise's, not the simulator's.** `launch/mcl.rviz` is the file (rendered per robot to
+`/tmp/ohm_mcl_<robot>.rviz`, because RViz 2 cannot substitute a robot name into a display), and the proof
+that a panel exists is the subscriber list of the viewer node:
+
+```
+$ ros2 node info /rviz | sed -n '/Subscribers:/,/Publishers:/p'
+  /alice/kf/path: nav_msgs/msg/Path
+  /alice/kf/pose: geometry_msgs/msg/PoseWithCovarianceStamped
+  /alice/odom: nav_msgs/msg/Odometry
+  /alice/particles: geometry_msgs/msg/PoseArray
+  /alice/scan: sensor_msgs/msg/LaserScan
+  /clock: rosgraph_msgs/msg/Clock
+  /map: nav_msgs/msg/OccupancyGrid
+  /map_updates: map_msgs/msg/OccupancyGridUpdate
+```
+
+Seven topics, one per panel, with `truth` absent because that panel ships switched off. `/map` appears
+because the map server was started by `map:=auto`; the RViz log says `Trying to create a map of size 80 x 48
+using 1 swatches`, which is the transient-local subscription actually receiving the latched message — the
+`test_the_map_is_asked_for_with_the_qos_the_map_server_sends_it_with` test is what keeps that pairing from
+being edited apart. (Under `llvmpipe` the Map display also logs one GLSL link error for its indexed-texture
+shader; that is software rendering, not this configuration, and it is gone on a machine with a GPU.)
+
+**The two topics no sensor produces** (`ohm_localization/view.py`), measured from a third process while the
+drive was running:
+
+| topic | rate | content |
+|---|---|---|
+| `/alice/particles` | 72 frames in 8.0 s = 9.0 Hz | 400 poses per frame (`1200 // cloud_stride(1200)`, i.e. every third particle), `frame_id: map`, stamped 24.42 s — the scan's sim seconds; particle[0] moved 0.114 m between two frames |
+| `/alice/kf/path` | 72 frames in 8.0 s = 9.0 Hz | last frame carries 270 poses; grew 199 → 270 in 8.0 s of drive ≈ 9 poses/s (`VIEW_DT` = 0.1 s), capped at `PATH_MAX = 2000` = 200 s of drive |
+| `/alice/kf/pose` | **25.9 Hz** with the view running | the graded topic, unaffected: the same node reports **34.1 Hz** on the in-process door (§1), where the view is off by construction |
+
+Two decisions came out of measuring rather than intending. The cloud is *strided*, not truncated: 1200 arrows
+is 1200 scene nodes rebuilt ten times a second, and every third particle shows the same spread and the same
+collapse for a third of the cost. And both topics carry the **measurement's** stamp: the same probe shows the
+simulator's own `send_kf` stamping `kf/pose` with 0.0 (it is a `Kf(t=0.0, …)` in `robot_io.send_kf`) while
+`/particles` arrives with 24.42 s. The viewer runs on `use_sim_time` (`rviz_view.command`), and a wall-clock
+stamp would put the cloud 1.7 billion seconds in the past of that clock; `map` is the fixed frame, so the
+cloud needs no transform of its own to be drawn.
+
+**The graded door is untouched.** `./tools/run_lab.sh grade --task mcl_production --controller
+solution/mcl_node.py --headless` after the view landed: `PASS 30.0/30 pts`, `accuracy 0.015`, `improvement
+12.47`, `rate of kf/pose 34.1`, `NEES 0.19` — the same four numbers as §1, byte for byte, and the run prints
+no `view:` line at all, because `RosView` asks the bus for its rclpy node, finds none, and stays off. That is
+the property `test_the_view_stays_off_on_a_bus_without_a_node` holds.
+
+**What a Ctrl-C at the end of a run prints now** (SIGINT to the launch, which is what a terminal sends):
+
+```
+[INFO] [rviz-3]:      process has finished cleanly
+[INFO] [drive_alice-5]: process has finished cleanly
+[INFO] [node_alice-2]:  process has finished cleanly
+[INFO] [map_server-4]:  process has finished cleanly
+[ERROR] [mcl_sim-1]:   process has died [exit code 130]
+```
+
+Four children that say *cleanly* (rviz2 included, which needed `map_server` to stop raising
+`ExternalShutdownException` and the two nodes to answer "the bus is gone, then the run is over" instead of an
+`RCLError` — `mcl_node.main`, `drive_node.main`), and the simulator's own process leaving 130 behind, which
+is what Python does with SIGINT and is not this repository's to change.
+
+**One door is still red.** `controller:=student/mcl_template.py` does not start `mcl_node`; it starts
+`python3 -m ohm_localization.lab controller --controller <file>`, which is the simulator's own controller
+runner — and that process is terminated by SIGINT (`process has died [exit code -2]`) rather than printing
+"stopped". The lifecycle of the file door lives in `mecanum_lab/node.py`, so it is the simulator's to fix;
+the same run through the package door (`mcl_node`, the default) exits cleanly, which is why the difference is
+worth knowing before someone reads the red line as a crash in a student's file.
+
+## 16. The hall a node believes it is in (found through the new view)
+
+The first live run of the view with the *student's* file as controller printed this while the robot drove
+`production`:
+
+```
+[node_alice-2] mcl_template: GridMap(maze 52x44 @ 0.25 m field @0.1 m, 976 free cells), 1200 particles
+```
+
+The template asked `rob.world()` at the top of `mission()`. The launch starts the simulator and the node in
+the same instant, `/sim/world` is republished about once a second, and `robot_io.world()` falls back to the
+*local* config default when the topic has not arrived — `maze`. A filter matched against a 52 × 44 grid in a
+20 × 12 m hall does not report an error; it produces a smooth, confident, wrong estimate, which is the reason
+this had survived: the graded door runs one process and never sees the race, and the reference node had
+already been given a `wait for /sim/world` loop for exactly this reason (the "launch showed the wrong hall"
+row of `todo.md`, which fixed that one node and left the other two copies of the question alone). Three
+copies of "which hall" existed — the reference's waiting one, a bare one-liner in
+`icp_odom_node` that was never called, and the template's asking-one — so the rule moved to
+`ohm_localization/hall.py` (`hall_name(rob, task)`), the dead copy went away, and both remaining callers call
+the one that waits. Re-measured after the change, same command:
+
+```
+[node_alice-2] mcl_template: GridMap(production 80x48 @ 0.25 m field @0.1 m, 2736 free cells), 1200 particles
+```
+
+`test/test_hall.py` covers the three branches without ROS: the topic that arrives after four spins (the case
+that was broken), the topic that never arrives (the task file names the hall its thresholds were calibrated
+on), and a graph that dies mid-wait (the end of the waiting, not of the run). The graded numbers either side
+of the change are the same run: template `FAIL 0/30` with `accuracy 0.68 / improvement 0.27 / 5.3 Hz` before
+and after, solution `PASS 30/30` with `accuracy 0.015 / 34.1 Hz` before and after — the bug never touched the
+door that grades, which is exactly why it was invisible.

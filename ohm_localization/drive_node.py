@@ -65,6 +65,15 @@ def main() -> None:
         robot_io.serve(sys.modules[__name__])
     except KeyboardInterrupt:
         print("drive_node: stopped", file=sys.stderr)
+    except Exception as exc:                          # noqa: BLE001 - and only for a graph that is really gone
+        # The same shutdown as in mcl_node.main(): the runner's last `mission_state` publish lands in a
+        # context the launch has already closed. Saying "over then" instead of raising is what keeps the
+        # launch's last lines free of `exit code 1` for a drive that was driven perfectly.
+        rclpy = sys.modules.get("rclpy")
+        if rclpy is None or rclpy.ok():
+            raise
+        print(f"drive_node: the bus closed before the last status message ({type(exc).__name__})",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":

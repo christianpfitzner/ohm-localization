@@ -50,7 +50,10 @@ setup(
         (os.path.join("share", PACKAGE, "config"), glob("config/*.json")),
         # Controllers by path, not by module: see the docstring. `student/*.py` is what a group edits,
         # `solution/*.py` is the reference that the thresholds were measured against.
-        (os.path.join("share", PACKAGE, "launch"), glob("launch/*.yaml")),
+        # The RViz view of the exercise (`launch/mcl.rviz`) is data too: `rviz_config.render()` reads it back
+        # out of the install prefix, so a `ros2 launch` from an installed workspace shows the same window a
+        # checkout does. `ohm_localization/rviz_config.py` names the file, this line is why it exists there.
+        (os.path.join("share", PACKAGE, "launch"), glob("launch/*.rviz")),
         (os.path.join("share", PACKAGE, "solution"), glob("solution/*.py")),
         (os.path.join("share", PACKAGE, "student"), glob("student/*.py")),
         (os.path.join("share", PACKAGE, "docs"), glob("docs/*.md")),

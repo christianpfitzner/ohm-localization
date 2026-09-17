@@ -13,9 +13,11 @@ What the node adds, and what it insists on:
 * the lifecycle — `robot_io.serve()` at the bottom, `/sim/task` starting a run underneath it;
 * a loop keyed on **message stamps**, never on the wall clock, which discards the measurements the bus
   still remembers from the previous task and restarts the filter after a gap longer than `SLEEP`;
-* the map — `load_map(hall)` reads the same `worlds/<name>.txt` the simulator builds its walls from,
-  so map and physics cannot disagree;
+* the map — `hall_name(rob, task)` reads `/sim/world` and waits for it, so map and physics cannot disagree
+  (`ohm_localization/hall.py`, which the student template calls as well);
 * `/<robot>/kf/pose` with 1σ, which the grader measures for RMSE *and* for NEES;
+* `/<robot>/particles` and `/<robot>/kf/path` over ROS, for the RViz view of the cloud (`view.py`) — never
+  on the way to a grade, and never present at all on the in-process door;
 * parameters from the running task's `mcl` block in `config/tasks_localization.json`, with `OHM_MCL_*`
   on top of it.
 
@@ -28,11 +30,12 @@ protocol question and not a task.
 import json
 import os
 import sys
-import time
 
 from ohm_localization import paths
 from ohm_localization.gridmap import load_map
+from ohm_localization.hall import hall_name
 from ohm_localization.mcl import MclParams, MonteCarloLocaliser
+from ohm_localization.view import RosView        # off by itself on a bus without a node: see view.py
 
 # No `from mecanum_lab import robot_io` here, on purpose. The rest of this package imports numpy and nothing
 # else, so `import ohm_localization` works on a laptop with no ROS and no simulator in sight (there is a test
@@ -47,7 +50,6 @@ TRACE_FILE = os.environ.get("OHM_MCL_TRACE")
 
 REPORT_DT = 0.02          # s = 50 Hz: kf/pose report rate, as in the KF experiment
 SLEEP = 2.0               # s: a longer gap is a pause or a respawn, not a prediction
-WORLD_WAIT = 6.0          # s: how long to wait for /sim/world before falling back
 SIGMA_THETA_PRIOR = 0.6   # rad, 1σ of the initial heading: about ±35°, a robot that was parked
 
 # Defaults, in the units the sensor model has.  A task's "mcl" block overrides them; an environment
@@ -101,41 +103,6 @@ def task_options(task_id: str) -> dict:
     return opt
 
 
-def task_world(task_id: str) -> str:
-    """The hall the task file names for this task — empty if the task file or the task is not there."""
-    try:
-        with open(task_file(), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-        return str(next((t.get("world") or "" for t in cfg.get("tasks", [])
-                         if t.get("id") == task_id), ""))
-    except (OSError, ValueError):
-        return ""
-
-
-def world_name(rob, task_id: str = "") -> str:
-    """Which hall this run is in: `/sim/world`, then the task file, then the simulator's config.
-
-    `rob.world()` answers from the simulator's config default when `/sim/world` has not arrived yet,
-    and that default is a different hall than the one the run was started in. The launch file starts
-    the simulator and this node in the same instant and the simulator republishes the topic once a
-    second, so asking once and taking the first answer localises the whole drive against the wrong
-    map — silently, with a plausible-looking estimate. Hence: wait for the topic.
-    """
-    deadline = time.monotonic() + WORLD_WAIT
-    while rob.running() and time.monotonic() < deadline:
-        payload = str(rob.bus.last("world")[0] or "")
-        if payload:
-            try:
-                name = str(json.loads(payload).get("name") or "")
-            except ValueError:
-                name = ""
-            if name:
-                return name
-        if not spin_or_stop(rob, 0.05):
-            return
-    return task_world(task_id) or str(rob.config("world", "arena") or "arena")
-
-
 def stamp(*measure) -> float:
     """Newest stamp among the measurements given — 0.0 for those that are not there yet."""
     return max([m.t for m in measure if m is not None] + [0.0])
@@ -176,7 +143,7 @@ def mission(rob, task):
     new one arrives, and weighting a scan twice would double-count the world.
     """
     opt = task_options(task)
-    hall = world_name(rob, task)
+    hall = hall_name(rob, task)                 # waits for /sim/world; see ohm_localization/hall.py
     grid = load_map(hall)
     params = MclParams(particles=int(opt["particles"]), beam_stride=int(opt["beam_stride"]),
                        sigma_z=float(opt["sigma_z"]), z_rand=float(opt["z_rand"]),
@@ -196,6 +163,7 @@ def mission(rob, task):
     f, baseline = None, stamp(rob.odom(), rob.scan())      # what the bus already knew
     last_odom_t, last_scan_t, letzter_meldung = 0.0, 0.0, -1e9
     trace = None
+    view = RosView(rob)                 # the cloud and the path, over ROS; silent on the graded door
     while rob.running() and rob.task() == task and spin_or_stop(rob, 0.005):
         o, scan = rob.odom(), rob.scan()
         if o is None or stamp(o, scan) <= baseline:
@@ -214,6 +182,8 @@ def mission(rob, task):
                 f = MonteCarloLocaliser(grid, params, pose=(o.x, o.y, o.theta),
                                         sigma=(prior, prior, SIGMA_THETA_PRIOR), prior="gaussian")
                 f.last_odom = None
+                view.reset()            # a restarted filter drove two halls; the picture must not draw them
+                                        # as one line
             f.predict_odometry(o)
             last_odom_t = o.t
         if scan is not None and scan.t > last_scan_t:
@@ -228,6 +198,7 @@ def mission(rob, task):
                             f"{t_e['beams']} {f.diversity()} {t_e['resamples']}\n")
                 trace.flush()
         e = f.estimate()                          # the newest estimate, on every loop, for `rate_min`
+        view.publish(f.x, e, o.t)                 # throttled twice over: 10 Hz here, 50 Hz on kf/pose
         if o.t - letzter_meldung >= REPORT_DT:
             letzter_meldung = o.t
             rob.send_kf(e["x"], e["y"], e["theta"], e["sx"], e["sy"], e["sth"],
@@ -253,6 +224,18 @@ def main() -> None:
     except KeyboardInterrupt:
         # Ctrl-C, or `ros2 launch` stopping this node when the simulator finished: a stop, not a crash.
         print("mcl_node: stopped", file=sys.stderr)
+    except Exception as exc:                          # noqa: BLE001 - and only for a graph that is really gone
+        # The end of a `ros2 launch` run invalidates the context a moment before `serve()` finishes with this
+        # task: the runner still wants to say "done" on `/alice/mission_state`, and that one publish raises an
+        # RCLError about a publisher's context. Answering "then the run is over" loses nothing — the message
+        # has nowhere to go — while answering with a traceback costs the launch an `exit code 1` and a red
+        # `process has died` as the last line a group sees after a good drive. An exception raised while the
+        # graph is still up, or in a process that never had one (the in-process door), is our bug and stays.
+        rclpy = sys.modules.get("rclpy")
+        if rclpy is None or rclpy.ok():
+            raise
+        print(f"mcl_node: the bus closed before the last status message — the drive is over, nothing was "
+              f"lost ({type(exc).__name__})", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -7,10 +7,12 @@
 **What is already here, and why.** The node lifecycle (`serve()` at the bottom, one mission per task), the
 map (`load_map`, from the simulator's own hall text, with the exact clearance field), the initial cloud, the
 motion model with its `rot1 / trans / rot2` decomposition and its noise **rates**, the N_eff trigger, the
-systematic resampling, and the estimate with its circular mean of the heading. Those are the parts where a
-mistake costs an afternoon and teaches nothing: the rate semantics of the motion noise, for instance, cost a
-whole day of this repository's development and are documented in `docs/mcl.md` — a group should not have to
-reinvent them inside 180 minutes to be allowed to learn about sensor models.
+systematic resampling, the estimate with its circular mean of the heading, and the two topics RViz reads
+(`ros2 launch ohm_localization mcl.launch.py controller:=student/mcl_template.py` shows *your* cloud
+collapsing, because `ohm_localization/view.py` publishes it). Those are the parts where a mistake costs an
+afternoon and teaches nothing: the rate semantics of the motion noise, for instance, cost a whole day of this
+repository's development and are documented in `docs/mcl.md` — a group should not have to reinvent them
+inside 180 minutes to be allowed to learn about sensor models.
 
 **What is yours — `TODO(L1)` and nothing else.** The weight of a particle given a scan. As shipped, every
 particle is equally likely, which is not a wrong filter, it is a filter that has decided the LIDAR has
@@ -50,6 +52,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mecanum_lab import robot_io                                        # noqa: E402
 from ohm_localization.gridmap import load_map                           # noqa: E402
+from ohm_localization.hall import hall_name                             # noqa: E402
+from ohm_localization.view import RosView                               # noqa: E402
 
 # --------------------------------------------------------------------------- parameters (L4 changes these)
 PARTICLES = 1200            # N
@@ -217,19 +221,18 @@ class ParticleFilter:
                     neff=float(self.last_neff), resamples=self.resamples, particles=self.n)
 
 
-def world_name(rob) -> str:
-    """Which hall this run is in — asked of the simulator on `/sim/world`, never hard-coded."""
-    return str((rob.world() or {}).get("name") or "production")
-
-
 def mission(rob, task):
     """Localise for as long as this task runs. Given, including the stamp discipline; read the comments."""
-    grid = load_map(world_name(rob))
+    # `hall_name` waits for /sim/world rather than asking once: the simulator and this node start in the same
+    # instant, and the hall the local config defaults to is `maze` — a node that answers first localises the
+    # whole drive against walls that are not in this hall, and nothing about the estimate looks wrong.
+    grid = load_map(hall_name(rob, task))
     n = int(os.environ.get("OHM_MCL_PARTICLES", PARTICLES))
     sigma_prior = float(os.environ.get("OHM_MCL_PRIOR", PRIOR_SIGMA))
     print(f"mcl_template: {grid}, {n} particles, stride {BEAM_STRIDE}, sigma_z {SIGMA_Z} m, "
           f"prior ±{sigma_prior} m", file=sys.stderr)
     f, last_odom_t, last_scan_t, letzter = None, 0.0, 0.0, -1e9
+    view = RosView(rob)             # /particles and /kf/path over ROS; nothing on the door that grades
     while rob.running() and rob.task() == task:
         rob.spin(0.005)
         o, scan = rob.odom(), rob.scan()
@@ -250,6 +253,7 @@ def mission(rob, task):
             last_scan_t = scan.t
             f.update(scan)
         e = f.estimate()
+        view.publish(f.x, e, o.t)               # the cloud you are running, for RViz (`rviz:=true`)
         if o.t - letzter >= REPORT_DT:
             letzter = o.t
             rob.send_kf(e["x"], e["y"], e["theta"], e["sx"], e["sy"], e["sth"],

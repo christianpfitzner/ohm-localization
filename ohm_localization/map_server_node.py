@@ -100,6 +100,7 @@ def main(argv=None) -> int:
         import rclpy
         from geometry_msgs.msg import Point, Pose, Quaternion
         from nav_msgs.msg import MapMetaData, OccupancyGrid
+        from rclpy.executors import ExternalShutdownException
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import Header
     except Exception as exc:                          # noqa: BLE001 - the message is the useful part
@@ -127,7 +128,9 @@ def main(argv=None) -> int:
         print("map_server: the map is static — published once and latched, Ctrl-C to stop.", file=sys.stderr)
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.5)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C here, and the `ros2 launch` shutdown that lands inside the wait set: a map that was shown
+        # for 40 s has done its job, and a stack trace about a closed context reads like a broken server.
         pass
     finally:
         node.destroy_node()

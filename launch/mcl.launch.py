@@ -1,13 +1,21 @@
 """Monte-Carlo localisation on the simulator, over ROS 2 — everything important is an argument here.
 
     ros2 launch ohm_localization mcl.launch.py                       # reference solution, production hall
+    ros2 launch ohm_localization mcl.launch.py rviz:=false headless:=true
     ros2 launch ohm_localization mcl.launch.py task:=mcl_wide prior:=2.0
     ros2 launch ohm_localization mcl.launch.py controller:=student/mcl_template.py headless:=true
-    ros2 launch ohm_localization mcl.launch.py task:=mcl_dirty lidar_sigma:=0.25 sigma_z:=0.5 rviz:=true
-    ros2 launch ohm_localization mcl.launch.py map:=true             # /map as nav_msgs/OccupancyGrid
+    ros2 launch ohm_localization mcl.launch.py task:=mcl_dirty lidar_sigma:=0.25 sigma_z:=0.5
+    ros2 launch ohm_localization mcl.launch.py map:=false             # no /map topic at all
 
-Three processes at most: the simulator (with our task file), the localiser node, optionally `rviz2` and
-optionally the `map_server` that publishes the hall as an `OccupancyGrid` for RViz and for `nav2` tools.
+Four processes at most: the simulator (with our task file), the localiser node, optionally the `map_server`
+that publishes the hall as an `OccupancyGrid`, and optionally `rviz2` with this package's own view.
+
+**The window is part of the exercise.** `rviz:=auto` — the default — opens RViz 2 on `launch/mcl.rviz`: the
+particle cloud (`/<robot>/particles`), the estimate with its covariance ellipse (`/<robot>/kf/pose`), the
+scan, the odometry trail and the filter's own path (`/<robot>/kf/path`), and `map:=auto` starts the map
+server beside it, because a localisation without walls is an arrow in the void. The two cases that leave the
+window off and say so on the terminal: `headless:=true`, and a terminal with no `DISPLAY` — a viewer that
+dies at startup teaches the wrong lesson, and `rviz:=false` never starts one at all.
 
 **This is the ROS door, not the graded one.** The number for a sheet comes from
 
@@ -63,8 +71,10 @@ BASICS = [
                       "(empty or false = drive nothing by hand: the keyboard does)"),
     ("seed", "1", "noise seed: same seed, same measurement series"),
     ("log", "", "CSV measurement log, e.g. runs/mcl.csv — tools/mcl_report.py reads its own recording"),
-    ("rviz", "false", "start rviz2 on this robot's topics: auto | true | false"),
-    ("map", "false", "also run this package's map_server, publishing /map as a nav_msgs/OccupancyGrid"),
+    ("rviz", "auto", "show the cloud, the covariance, the scan, the odometry and the path in rviz2: "
+                    "auto | true | false (auto = yes, unless this run is headless or has no DISPLAY)"),
+    ("map", "auto", "also run this package's map_server, publishing /map as a nav_msgs/OccupancyGrid: "
+                    "auto | true | false (auto = yes when the viewer runs, whose first panel is the hall)"),
     ("log_level", "info", "info | debug | warning"),
     ("use_sim_time", "true", "use simulation time (/clock) for timestamps"),
 ]
@@ -100,7 +110,7 @@ def _path(given: str) -> str:
 
 
 def setup(context, *args, **kwargs):
-    """Two processes, plus the map server and RViz when they were asked for."""
+    """Two processes, plus the map server and the viewer when they were asked for."""
     def arg(name):
         return context.launch_configurations.get(name, "")
 
@@ -151,7 +161,57 @@ def setup(context, *args, **kwargs):
     # node outlives it and `ros2 launch` sits there until Ctrl-C.
     parts.append(L.RegisterEventHandler(OnProcessExit(
         target_action=sim_proc, on_exit=[L.Shutdown(reason="simulator finished")])))
-    if arg("map").lower() in TRUE:
+    def flag(name, default):
+        """An on/off argument as `"auto" | "true" | "false"`, with a typo named where it was typed.
+
+        Only the two viewer arguments go through here, and they are the two where a misspelling used to be a
+        silent change of picture: `rviz_view.plan()` asks "is there an rviz2" *before* it looks at the value,
+        so `rviz:=ture` on a machine that has RViz opened a window instead of saying that `ture` is not one
+        of the three values the argument documents.
+        """
+        spelled = {"1": "true", "yes": "true", "on": "true",
+                   "0": "false", "no": "false", "off": "false"}
+        value = spelled.get((arg(name) or default).strip().lower(),
+                            (arg(name) or default).strip().lower())
+        if value not in ("auto", "true", "false"):
+            raise ValueError(f"{name}:={arg(name)} is not one of auto, true, false")
+        return value
+
+    note = None
+    # --- the viewer. The simulator answers "is there an rviz2 on this machine at all" (it is not part of a
+    # ROS base install, and a launch that dies on it is a bad first hour); this package decides what the
+    # window shows and refuses a value that is not one of the three it documents.
+    want = flag("rviz", "auto")
+    rviz_started = False
+    if want != "false":
+        try:
+            from mecanum_lab import rviz_view
+        except Exception as exc:                     # noqa: BLE001 - a viewer is no reason to stop a run
+            rviz_view, start, note = None, False, f"rviz not started (mecanum_lab.rviz_view: {exc})"
+        else:
+            start, note = rviz_view.plan(want)
+        if start and headless and want == "auto":
+            start = False
+            note = "rviz stays off: this run is headless (`rviz:=true` asks for the window anyway)"
+        elif start and not os.environ.get("DISPLAY"):
+            start = False
+            note = ("no DISPLAY in this terminal, so the window would die at startup — run this where the "
+                    "screen is, or start the launch under `xvfb-run`")
+        if start and rviz_view is not None:
+            if SHARE not in sys.path:
+                sys.path.insert(0, SHARE)            # a launch from a checkout with nothing sourced
+            from ohm_localization import rviz_config
+            config = rviz_config.render(robot)       # launch/mcl.rviz, with this robot in its topic names
+            parts.append(L.ExecuteProcess(cmd=rviz_view.command(config,
+                                                                sim_time=arg("use_sim_time").lower() in TRUE),
+                                          additional_env=env, output="screen", name="rviz"))
+            rviz_started = True
+            note = (f"rviz: {config} — particles, kf/pose covariance, scan, odometry, path. The file to edit "
+                    f"is launch/mcl.rviz, not the one in /tmp")
+
+    # The map before the viewer, so the latched /map is already on the bus when RViz subscribes; `auto` here
+    # means "yes, if there is a window that shows it", which is what the map is for in this exercise.
+    if flag("map", "auto") == "true" or (flag("map", "auto") == "auto" and rviz_started):
         parts.append(L.ExecuteProcess(
             cmd=[sys.executable, "-m", "ohm_localization.map_server_node", "--world", arg("world")],
             additional_env=env, output="screen", name="map_server"))
@@ -162,18 +222,6 @@ def setup(context, *args, **kwargs):
         parts.append(L.ExecuteProcess(
             cmd=[sys.executable, "-m", "ohm_localization.drive_node", "--robot", robot],
             additional_env=env, output="screen", name=f"drive_{robot}"))
-
-    note = None
-    if arg("rviz").lower() in TRUE or arg("rviz").lower() == "auto":
-        try:
-            from mecanum_lab import rviz_view                    # same viewer config generator as the sim
-            start, note = rviz_view.plan(arg("rviz"))
-            if start:
-                viewer = rviz_view.command(rviz_view.render_config(SHARE, robot),
-                                           sim_time=arg("use_sim_time").lower() in TRUE)
-                parts.append(L.ExecuteProcess(cmd=viewer, additional_env=env, output="screen", name="rviz"))
-        except Exception as exc:                                 # noqa: BLE001 - a viewer is not a reason to stop
-            note = f"rviz not started (mecanum_lab.rviz_view unavailable: {exc})"
 
     sensors = "  ".join(f"{name}={arg(name)}" for name, _, _ in SETTINGS if arg(name))
     knobs = "  ".join(f"{name}={arg(name)}" for name, _, _ in MCL_ARGS if arg(name))

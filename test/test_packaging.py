@@ -205,7 +205,8 @@ def test_every_entry_point_leads_somewhere_and_is_documented():
 def test_the_install_puts_the_controllers_and_the_task_file_where_a_ros_run_looks():
     """`--controller` takes a *file path*, so the controllers have to be installed as data."""
     src = _source(SETUP)
-    for destination, pattern in (("launch", "launch/*.py"), ("config", "config/*.json"),
+    for destination, pattern in (("launch", "launch/*.py"), ("launch", "launch/*.rviz"),
+                                 ("config", "config/*.json"),
                                  ("solution", "solution/*.py"), ("student", "student/*.py")):
         assert destination in src and pattern in src, f"{pattern} is not in data_files"
         assert any(os.path.isfile(f) for f in _glob(pattern)), f"nothing matches {pattern} in the checkout"
@@ -298,6 +299,17 @@ def test_the_commands_in_the_docstring_are_commands_the_file_accepts():
     used = set(re.findall(r"(\w+):=", doc))
     assert used, "the docstring shows no launch arguments, so this test would pass on an empty file"
     assert used <= declared, f"in the docstring but not declared: {sorted(used - declared)}"
+
+
+def test_the_launch_arguments_the_readme_prints_are_arguments_the_file_has():
+    """`prior:=` in a document that the launch file does not declare is a command that fails in a lab."""
+    import re
+    declared = {row[0] for name in ("BASICS", "SETTINGS", "MCL_ARGS")
+                for row in _constant(_module(LAUNCH), name)}
+    used = set(re.findall(r"(\w+):=", _source(os.path.join(ROOT, "README.md"))))
+    assert used, "the README names no launch argument, so this test would pass on an empty file"
+    missing = sorted(used - declared)
+    assert not missing, f"offered by README.md, not declared by launch/mcl.launch.py: {missing}"
 
 
 def test_the_launch_file_is_just_data_when_launch_is_not_installed():

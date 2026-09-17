@@ -46,15 +46,12 @@ source install/setup.bash
 ros2 launch ohm_localization mcl.launch.py
 ```
 
-The reference filter in the `production` hall. The commanded drive of task L1 is driven for you and the
-launch exits when it is through. Measured here over DDS: **17 mm** RMSE against **196 mm** of raw
-odometry, 11.8×, 16 reports/s.
+The reference filter in the `production` hall, with RViz 2 open beside it: the particle cloud, the
+estimate with its 1σ ellipse, the LIDAR scan, the odometry trail and the path the filter drove. The
+commanded drive of task L1 is driven for you. Ctrl-C ends the run.
 
-One argument at a time — `--show-args` lists all of them:
-
-```bash
-ros2 launch ohm_localization mcl.launch.py --show-args
-```
+`rviz:=false` runs without the window, `map:=false` without the `/map` topic the hall is drawn from, and
+`ros2 launch ohm_localization mcl.launch.py --show-args` lists every argument:
 
 ```bash
 ros2 launch ohm_localization mcl.launch.py task:=mcl_wide prior:=2.0
@@ -65,7 +62,7 @@ ros2 launch ohm_localization mcl.launch.py controller:=student/mcl_template.py h
 ```
 
 ```bash
-ros2 launch ohm_localization mcl.launch.py task:=mcl_dirty sigma_z:=0.5 rviz:=true map:=true
+ros2 launch ohm_localization mcl.launch.py task:=mcl_dirty sigma_z:=0.5
 ```
 
 Without a build, on the in-process bus:
@@ -88,20 +85,9 @@ python3 -m ohm_localization.lab sim --world production --headless
 ./tools/run_lab.sh grade --task mcl_production --controller solution/mcl_node.py --headless
 ```
 
-The reference solution, measured in this checkout:
-
-```
-PASS   30.0/ 30 pts  L1 — Where am I? Monte-Carlo localization against the map
-        required: accuracy 0.015 ≤ 0.05
-        required: improvement over raw sensor 12.47 ≥ 5.0
-        required: rate of kf/pose 34.1 ≥ 5
-        required: NEES 0.19 in [0.05 … 5]
-```
-
 `grade:=` on the launch file starts the grader in the simulator and your node in a second process; over
 that door a localisation grade is measured from `kf/pose` messages crossing DDS and reports
-`rate of kf/pose 0.0`, the effect the simulator documents for its own KF tasks. Use it to check wiring,
-never to produce a number.
+`rate of kf/pose 0.0`. Use it to check wiring, never to produce a number.
 
 ## 5 · Examples
 
@@ -118,20 +104,18 @@ needs.
 
 ## 6 · The four tasks
 
-All four are graded in the `production` hall (20 × 12 m, 323 of 360 beams find something) against the
-odometry of `sim.odom.geometry.scale_xy: 1.03`, which drifts 0.19–0.44 m over a drive. `reference` and
-`template` are `solution/mcl_node.py` and `student/mcl_template.py` as shipped, measured here.
+All four are graded in the `production` hall (20 × 12 m) against odometry that drifts 0.19–0.44 m over a
+drive. `student/mcl_template.py` is the starting point: the node loop, the map, the prior, the motion
+model, `N_eff` and the resampling are given, the sensor model is `TODO(L1)`.
 
-| id | pts | the question | threshold | reference | template |
-|---|---|---|---|---|---|
-| `mcl_production` | 30 | write the sensor model; localise from a 0.5 m prior | rmse ≤ 0.05, improvement ≥ 5.0, NEES ∈ [0.05, 5] | 15 mm, 12.5×, NEES 0.19 | 0.68 m, 0.27× → fails |
-| `mcl_wide` | 35 | the same from a 2 m prior | rmse ≤ 0.06, improvement ≥ 3.0, NEES ∈ [0.05, 8] | 15 mm, 12.6× | 0.68 m, 0.27× → fails |
-| `mcl_budget` | 35 | same accuracy, a quarter of the particles, 53 s drive | rmse ≤ 0.07, improvement ≥ 3.0, NEES ∈ [0.05, 12] | 17 mm, 26.4× | 1.26 m, 0.35× → fails |
-| `mcl_dirty` | 30 | the window is dirty (σ_lidar = 0.25 m): match the model to the sensor | rmse ≤ 0.07, improvement ≥ 2.5, NEES ∈ [0.3, 5] | 35 mm, 5.4× | 0.68 m, NEES 0.12 → fails |
+| id | pts | the question | what it takes |
+|---|---|---|---|
+| `mcl_production` | 30 | write the sensor model; localise from a 0.5 m prior | rmse ≤ 0.05 m, ≥ 5× the odometry, NEES ∈ [0.05, 5] |
+| `mcl_wide` | 35 | the same from a 2 m prior | rmse ≤ 0.06 m, ≥ 3×, NEES ∈ [0.05, 8] |
+| `mcl_budget` | 35 | same accuracy, a quarter of the particles | rmse ≤ 0.07 m, ≥ 3×, NEES ∈ [0.05, 12] |
+| `mcl_dirty` | 30 | the window is dirty (σ_lidar = 0.25 m): match the model to the sensor | rmse ≤ 0.07 m, ≥ 2.5×, NEES ∈ [0.3, 5] |
 
-`student/mcl_template.py` is the starting point: the node loop, the map, the prior, the motion model,
-`N_eff` and the resampling are given, the sensor model is `TODO(L1)`. As shipped it publishes at 5.3 Hz,
-never touches a wall and is three times worse than the odometry
+As shipped, the template fails all four — on the sensor model and not on the plumbing
 ([`student/FAILURE.md`](student/FAILURE.md)).
 
 Printable sheets: [`docs/handout/exercises.pdf`](docs/handout/exercises.pdf), generated from
@@ -170,58 +154,42 @@ arguments. The environment beats the task file.
 | `/map` | in (`map_server`) | `nav_msgs/OccupancyGrid`, 0.25 m cells, `transient_local` |
 | `/<robot>/cmd_vel` | in (`drive_node`) | `geometry_msgs/Twist` |
 | `/<robot>/kf/pose` | out | `geometry_msgs/PoseWithCovarianceStamped` — x, y, θ and their σ, which is graded |
+| `/<robot>/particles` | out (ROS only) | `geometry_msgs/PoseArray` — the cloud, for the RViz view |
+| `/<robot>/kf/path` | out (ROS only) | `nav_msgs/Path` — the estimate's own trail |
 | `/sim/world`, `/sim/task` | in | the node asks which hall and which task; it hard-codes neither |
 
-## 9 · Tests and measurements
-
-```bash
-python3 -m pytest test -q
-```
-
-99 tests, numpy alone, about 70 s. `tools/` holds the instruments the thresholds were measured with:
-
-| command | what it answers | ~time |
-|---|---|---|
-| `./tools/check.sh` | suite + drive fit + ICP claims + sheet drift | 60 s |
-| `./tools/check.sh --live` | the four graded runs, the template's failure profile, a colcon build | ~7 min |
-| `python3 tools/mcl_report.py <recording>` | σ_z sweeps, N_eff, timing, `--compare` two recordings | 3 s |
-| `python3 tools/icp_eval.py --claims` | recomputes every ICP number in `docs/icp.md`, non-zero on drift | 10 s |
-| `python3 tools/drive_check.py` | does the commanded drive fit the hall, how many beams echo there | 3 s |
-| `python3 tools/record_scans.py` | record `scan + odom + truth` to JSONL (needs `OHM_RECORD=`) | per run |
-| `python3 tools/scan_probe.py` | is our map/beam convention the simulator's | 40 s |
-| `python3 tools/template_check.py --record` | what the shipped template scores, into `student/FAILURE.md` | 3 min |
-
-## 10 · When it does not work
+## 9 · When it does not work
 
 | what you see | what it is |
 |---|---|
 | `package 'ohm_localization' not found` on a machine where the build succeeded | the ROS 2 in this terminal is not the one the workspace was built with. `source install/setup.bash`, or `./install.sh --check` to see which distro can run this package |
 | `ros2: command not found` | no ROS 2 sourced in this terminal. A sourced ROS is a property of the terminal, not of the machine |
 | `sudo apt install ros-<distro>-desktop` from `--check` | that distro has no `ros2` CLI, no `launch_ros` or no `nav_msgs` — a `ros-base` install. Install the desktop set, or build against the distro `--check` calls complete |
+| the launch says rviz stays off | `headless:=true`, or no `DISPLAY` in this terminal. `rviz:=true` asks for the window anyway; `sudo apt install ros-$ROS_DISTRO-rviz2` installs it |
+| RViz shows a robot and no walls | `map:=false` — the simulator publishes no map topic of its own, this package's `map_server` does |
 | `World 'production': no importable mecanum_lab …` | the simulator is a separate checkout: `./install.sh --workspace`, or `export MECANUM_LAB=…`. This repository keeps no copy of the halls |
 | the simulator refuses to start, something about surfaces | pygame is missing (`sudo apt install python3-pygame`), and it is needed for `--headless` too |
 | grading says `rate of kf/pose 0.0` | you graded through `ros2 launch`; use `./tools/run_lab.sh grade …` |
-| the estimate is good and NEES is out of its band | N_eff counts particles, not places: the cloud can stand in 13 boxes of 5 cm while N_eff is 1200. `tools/mcl_report.py` prints both |
-| RViz shows a robot and no walls | you did not pass `map:=true`; the simulator publishes no map topic of its own |
+| the estimate is good and NEES is out of its band | N_eff counts particles, not places: the cloud can stand in 13 boxes of 5 cm while N_eff is 1200 |
+| RViz shows no particles | the localiser is not running, or it is a `./tools/run_lab.sh run` session: `/particles` exists on the ROS door only |
 
-## 11 · Layout
+## 10 · Layout
 
 ```
-ohm_localization/   gridmap · mcl · icp · synth · paths · lab · mcl_node · drive_node · icp_odom_node · map_server_node
+ohm_localization/   gridmap · mcl · icp · synth · paths · hall · lab · mcl_node · drive_node · icp_odom_node · map_server_node · view · rviz_config
 examples/           four small programs, one command each — see examples/README.md
 config/             tasks_localization.json: the four tasks — thresholds, drives, hints, protocol items
 student/            mcl_template.py (your starting point) and FAILURE.md (how it fails as shipped)
 solution/           mcl_node.py, the reference the thresholds were measured against
-launch/             mcl.launch.py
-docs/               exercises · mcl · icp · verification · handout/exercises.pdf
-tools/              the instruments the numbers were measured with
-test/               99 tests, numpy alone
+launch/             mcl.launch.py · mcl.rviz (the RViz view)
+docs/               exercises · mcl · icp · handout/exercises.pdf
+tools/              run_lab.sh and the instruments the numbers in docs/ were measured with
+test/               the suite; ./tools/check.sh runs it and the documents beside it
 ```
 
 * [`docs/exercises.md`](docs/exercises.md) — the four tasks with their checkpoints
 * [`docs/mcl.md`](docs/mcl.md) — the filter: motion model, sensor model, N_eff, what each knob costs
 * [`docs/icp.md`](docs/icp.md) — ICP: the two objectives, degeneracy, why stitching scans drifts
-* [`docs/verification.md`](docs/verification.md) — every number and where it came from
 * [`examples/README.md`](examples/README.md) — the four examples and what each one prints
 
 Three repositories make the laboratory: [`mecanum-lab`](../mecanum-lab) (the simulator, its physics and

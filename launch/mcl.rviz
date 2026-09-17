@@ -1,0 +1,326 @@
+# RViz 2 view of the localisation exercise — the template, not the run's file.
+#
+# Written out per robot at launch: every topic of this project carries the robot's name, RViz 2 has no way
+# to substitute one into a display, so `{robot}` is replaced by `ohm_localization/rviz_config.py` and the
+# result lands in /tmp/ohm_mcl_<robot>.rviz. Edit this file, never the one in /tmp — "Save Config" in the
+# window writes the temporary file and the next launch throws it away.
+#
+# What the panels are for, in the order below:
+#
+#   particles   the cloud itself, before and while it collapses onto the wall. This is the one topic RViz
+#               cannot get from the simulator: the particles never leave the filter, `mcl_node` puts them
+#               on `/particles` for this picture (ohm_localization/view.py).
+#   estimate    `/<robot>/kf/pose` with its covariance shown: the ellipse is the σ the filter reports and
+#               the grader checks as NEES, so "the arrow is right but the ellipse is tiny" is the failure
+#               the NEES band is there to catch.
+#   lidar scan  `/<robot>/scan`, the measurement the sensor model is matching against the map.
+#   map         `/map` from this package's map_server: without it the estimate is an arrow in the void.
+#   odometry    `/<robot>/odom` with Keep 200: the wheel path, which is what drifts 0.2-0.4 m over a drive
+#               and what the filter has to be better than. Its covariance is off on purpose — the
+#               simulator fills that field with fixed placeholders, not with a belief.
+#   path        `/<robot>/kf/path`, the filter's own trail: 15 mm of RMSE is a number, this is the shape.
+#   truth       `/<robot>/truth`, off by default. It is the answer, and it is only published when the sim
+#               runs with `truth:=true` (the launch default). Check it on to see the gap between the
+#               estimate and the ground truth, check it off to see what the students see.
+#
+# Fixed frame `map`, the root of the tree the simulator broadcasts (map -> <robot>/odom -> <robot>/base_link
+# -> <robot>/laser, see the simulator's `tf_bcast.py`), and every topic says `Reliability Policy: Reliable`: the
+# simulator publishes standard QoS on purpose, RViz defaults a LaserScan to best effort, and the two never
+# find each other — "no data" with a running publisher is that, and `/map` additionally needs
+# `Durability Policy: Transient Local` because the map is latched (map_server_node.py).
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+      Splitter Ratio: 0.5
+    Tree Height: 460
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.4
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 120; 128; 145
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 0.6
+      Class: rviz_default_plugins/PoseArray
+      Color: 255; 170; 0
+      Color Transformer: FlatColor
+      Enabled: true
+      Head Length: 0.09
+      Head Radius: 0.03
+      Name: particles
+      Queue Size: 10
+      Shaft Length: 0.11
+      Shaft Radius: 0.008
+      Shape: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/particles
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/PoseWithCovariance
+      Color: 66; 200; 140
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.3
+          Color: 66; 200; 140
+          Scale: 1
+          Value: true
+        Value: true
+      Enabled: true
+      Head Length: 0.16
+      Head Radius: 0.07
+      Name: estimate ±1σ (kf/pose)
+      Shaft Length: 0.2
+      Shaft Radius: 0.02
+      Shape: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/kf/pose
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/LaserScan
+      Color: 242; 84; 71
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: lidar scan
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.04
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/scan
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: map (/map)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Update Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map_updates
+      Use Timestamp: false
+      Value: true
+    - Angle Tolerance: 0.1
+      Class: rviz_default_plugins/Odometry
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.3
+          Color: 204; 51; 204
+          Scale: 1
+          Value: true
+        Value: false
+      Enabled: true
+      Keep: 200
+      Name: odometry (wheel path)
+      Position Tolerance: 0.1
+      Shape:
+        Alpha: 1
+        Axes Length: 1
+        Axes Radius: 0.1
+        Color: 96; 170; 230
+        Head Length: 0.1
+        Head Radius: 0.04
+        Shaft Length: 0.2
+        Shaft Radius: 0.015
+        Value: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/odom
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/Path
+      Color: 66; 200; 140
+      Color Transformer: FlatColor
+      Enabled: true
+      Head Length: 0.1
+      Head Radius: 0.04
+      Length: 0.15
+      Name: path (the filter drove this)
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Position Transformer: XYZ
+      Queue Size: 10
+      Shaft Radius: 0.01
+      Shape: Arrow
+      Style: Billboards
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/kf/path
+      Unreliable: false
+      Use Arrow Length: false
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/Pose
+      Color Transformer: FlatColor
+      Color: 255; 255; 255
+      Description: ground truth
+      Enabled: false
+      Head Length: 0.18
+      Head Radius: 0.08
+      Name: truth (the answer)
+      Shaft Length: 0.24
+      Shaft Radius: 0.02
+      Shape: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /{robot}/truth
+      Unreliable: false
+      Value: false
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+      Marker Scale: 0.6
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Update Interval: 0
+      Value: true
+  Global Options:
+    Background Color: 33; 36; 43
+    Default Light: true
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 26
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 10
+        Y: 6
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.35
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 1.57
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 860
+  Hide Left Dock: false
+  Hide Right Dock: false
+  Views:
+    collapsed: false
+  Width: 1400

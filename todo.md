@@ -5,6 +5,8 @@ Original notes, kept as written:
 ROS
 - [x] fix install so `ros2 launch ohm_localization mcl.launch.py` works from a normal colcon workspace
 - [x] `colcon build` says success and then `ros2 launch` answers "package not found"
+- [x] a RViz view on the common launch file: the particles, the covariance of the pose, the lidar,
+      the odometry and the path of the robot
 
 code
 - [x] remove unused code
@@ -15,6 +17,8 @@ Documentation
 - [x] one command per copy code environment; not multiple stuff
 - [x] remove reasoning from output readme
 - [x] less detail, no hints for the use of ai -- reasoning and stuff
+- [x] the readme is for the exercise: the test suite, the measurements and the verification ledger are
+      not in it any more
 
 ## Resolved, with the run that says so
 
@@ -31,6 +35,9 @@ Documentation
 | pytest died when a ROS was sourced | `launch_testing`'s pytest plugin is registered by the distro and fails validation | `setup.cfg` blocks the ROS plugins for this package's runs |
 | `map_server` over ROS, accuracy | unmeasured | `/map` latched 80×48 @ 0.25 m; example 04 measured against truth over DDS: **14 mm** KF RMSE against **274 mm** odometry (19.7×), 1044 poses published |
 | the graded door | still had to be shown to work | `PASS 30/30` — accuracy 0.015 m, improvement 12.47×, rate 34.1 Hz, NEES 0.19 |
+| RViz showed no particles | `rviz:=true` started the *simulator's* viewer config: robot, scan, TF. The cloud never leaves `MonteCarloLocaliser`, so it was not on the bus at all | `ohm_localization/view.py` publishes `/particles` (400 arrows, 9 Hz) and `/kf/path` (9 poses/s); `launch/mcl.rviz` is the window, `rviz:=auto` and `map:=auto` are the defaults, and `ros2 node info /rviz` lists the seven topics of the seven panels (docs/verification.md §15) |
+| the launch ended in red | `map_server` raised `ExternalShutdownException` out of its spin, and `mcl_node`/`drive_node` exited 1 because `robot_io.serve()` publishes the task's last `mission_state` into a context the shutdown had already closed | four children `process has finished cleanly` (rviz2 included); only the simulator's own process leaves 130, which is Python's answer to SIGINT and is the simulator's to change |
+| the student's filter localised the wrong hall | seen through the new view: `mcl_template: GridMap(maze 52x44 …)` while the robot drove `production`. `rob.world()` falls back to the local config default when `/sim/world` has not arrived, and the template asked once — the reference node had a wait loop for exactly this, in a third copy nobody called | one rule, `ohm_localization/hall.py`: wait for the topic, then the task file, then the guess. Both doors call it, the dead copy in `icp_odom_node` is gone, `test/test_hall.py` holds the three branches (docs/verification.md §16) |
 
 ## Code
 
@@ -63,6 +70,12 @@ Fixed while measuring the examples:
 195 → 123 lines, one command per block, the reasoning voice gone, 22 commands checked against the
 repository. `docs/icp.md` §6 carries the stride table and `docs/verification.md` §8 the ledger entry for it.
 `python3 tools/make_handout.py --check`: 4 sheets match the task file.
+
+Second pass, on "nobody from my students and also I are not interested in this stuff in a documentation":
+the old §9 "Tests and measurements" is gone, §4's `PASS 30/30` block is gone, §6's measured
+`reference`/`template` columns are gone (the thresholds stayed — they are what a group aims at) and the link
+to `docs/verification.md` is gone. 232 → 213 lines while *gaining* the view: the RViz defaults in §3, the two
+topics in §8, two troubleshooting rows. `docs/verification.md` §15 took the measurements instead.
 
 ## Open
 
