@@ -161,8 +161,14 @@ class RosView:
         The scan and the odometry this loop reads are stamped in simulator seconds, and RViz is started with
         `use_sim_time` to match the clock the TF tree is broadcast in (`rviz_view.command`), so a wall-clock
         stamp here would put the cloud 1.7 billion seconds in the past of the viewer's own "now" and the panel
-        would stay empty while the data flows. `kf/pose` is the odd one out — `robot_io.send_kf` stamps it 0.0
-        — which is the other way to get this wrong, and not this node's field to fix.
+        would stay empty while the data flows.
+
+        The other way to get a header wrong is to leave it at its default, and `kf/pose` did that for a
+        while: out of `robot_io.send_kf` it carried stamp 0.0 and the frame `map` — the epoch, in a frame a
+        `tf:=localizer` run does not have — and every message of a 26 Hz stream was thrown away by the
+        estimate display's TF filter. Both fields belong to the simulator and are its business now
+        (`send_kf(..., t=)` and `ros_bridge.RclpyBus._adopt_tf`, tests/test_kf_header.py there); what is
+        stamped here is this file's own three topics, which were always measured as they are written.
         """
         head = self.M["Header"](frame_id=self.frame)
         head.stamp = self.M["Time"](sec=int(t), nanosec=int((t % 1.0) * 1e9))

@@ -187,6 +187,7 @@ arguments. The environment beats the task file.
 | RViz shows no particles | the localiser is not running, or it is a `./tools/run_lab.sh run` session: `/particles` exists on the ROS door only |
 | the LIDAR fan lies off the walls, further away the longer the drive goes on | TF, not the filter: the scan is drawn where the top edge of the tree puts it, and `tf:=sim` makes that edge the identity, so the fan follows the wheel encoders. `tf:=localizer` (the default) publishes it from the estimate. 0.20 m against 0.016 m mean off the truth, in the `production` hall |
 | the frame is called `hall` and not `map` | one name for one place: the simulator calls its ground frame `hall` in the tree where the localiser owns the top edge, and the launch spells it identically in RViz, in `/map` and in the transform. `tf:=sim` gives you `map` back |
+| RViz fills its terminal with `Message Filter dropping message: frame 'map' at time 0.000 … queue is full` and the estimate arrow never appears | an old `mecanum-lab`, not your filter: `send_kf` used to stamp every `kf/pose` at 0.0 in the frame `map`, and the display's TF filter throws away what it cannot transform — `ros2 topic echo /<robot>/kf/pose --once` shows the header. Pull the simulator (`git -C ../mecanum-lab pull`) and rebuild with `./install.sh --workspace`; since then the header carries the measurement's stamp and the run's frame — docs/verification.md §18 |
 
 ## 10 · Layout
 

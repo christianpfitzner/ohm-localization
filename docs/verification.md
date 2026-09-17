@@ -590,7 +590,8 @@ collapse for a third of the cost. And both topics carry the **measurement's** st
 simulator's own `send_kf` stamping `kf/pose` with 0.0 (it is a `Kf(t=0.0, …)` in `robot_io.send_kf`) while
 `/particles` arrives with 24.42 s. The viewer runs on `use_sim_time` (`rviz_view.command`), and a wall-clock
 stamp would put the cloud 1.7 billion seconds in the past of that clock; `map` is the fixed frame, so the
-cloud needs no transform of its own to be drawn.
+cloud needs no transform of its own to be drawn. (That 0.0 is the subject of §18, and not in the simulator
+any more.)
 
 **The graded door is untouched.** `./tools/run_lab.sh grade --task mcl_production --controller
 solution/mcl_node.py --headless` after the view landed: `PASS 30.0/30 pts`, `accuracy 0.015`, `improvement
@@ -751,3 +752,96 @@ while the scan jumps to 4 m off truth. Two `ros2 launch` runs of this exercise o
 not two independent pictures but one broken one, and it is visible only in the terminal. Nothing in this
 repository prevents it — a `ROS_DOMAIN_ID` per group would — so the check is before the symptom: one run per
 domain.
+**One correction to the two paragraphs above**, from the same view: §17 records that the RViz terminal filled
+with `TF_OLD_DATA … ignoring data from the past` at 20 Hz and that the scan jumped 4 m off truth. That
+paragraph is about two launches on one DDS domain. An early run of the measurements below had 589 such lines
+and repeated them until it was noticed that a second `ros2 launch` of this exercise, with the same robot name,
+was still alive from a previous check. Re-run with one launch on the domain: 0 `TF_OLD_DATA` and 0
+`Detected jump back in time`. §17's rule — one run per domain — is the reason the numbers quoted below are
+quoted with the command that produced them.
+
+## 18. The estimate panel stayed empty, and the terminal said why
+
+The report was a log line, not a failing grade:
+
+```
+[rviz-3] [INFO] … Message Filter dropping message: frame 'map' at time 0.000 for reason
+                   'discarding message because the queue is full'
+```
+
+A `tf2_ros::MessageFilter` — which is how every RViz display that draws through TF receives — holds a message
+until TF can bring it into the fixed frame, 10 deep. A message that can *never* be transformed stays until the
+next one pushes it out, and the push is what that INFO line reports, naming the message thrown away. So the
+line is a header complaint: some stream on the graph is stamped in a frame and at a time this run's transforms
+do not cover. One echo named it, on the documented command with everything default:
+
+```
+$ ros2 topic echo /alice/kf/pose --once          # tf:=localizer, so the hall is `hall` and RViz is fixed on `hall`
+header:
+  stamp:
+    sec: 0
+    nanosec: 0
+  frame_id: map
+```
+
+The graded topic — the one the estimate arrow and its covariance ellipse are drawn from — carried **both**
+ways of getting a header wrong. The stamp because `mecanum_lab/robot_io.py` built every report as
+`Kf(t=0.0, …)` and `ros_bridge._header()` writes `Kf.t` literally: a pose at the epoch, out of the cache of a
+TF buffer that is 15 s into a run. The frame because the header name comes out of the *publishing process's*
+config, and the controller is a second process whose config says nothing about `tf.tree: slam` — so it fell
+back to `tf_bcast`'s default, `map`, in a graph whose root is `hall` and where `map` is the name of the
+*localiser's own map*, i.e. of no frame in this tree at all. Neither field is read by the grader (it measures
+the numbers and counts arrivals, and `engine.set_kf()` stamps the arrival into `Kf.t` itself), which is why
+this survived two lab courses while the panel it disables is the one the exercise is graded on.
+
+The control that pinned it to the header rather than to the viewer was the same launch in the other tree:
+
+```
+ros2 launch ohm_localization mcl.launch.py tf:=sim        # fixed frame `map` = the message's frame
+→ 0 drop lines in 40 s
+```
+
+In that mode the message frame *is* the fixed frame, the filter's lookup is the identity and needs no
+transform, and the 0.0 stamp costs nothing. `tf:=localizer` — the default, and the mode the LIDAR fan sits on
+the walls in — is the one mode where both fields had to be right.
+
+Both are the simulator's fields and both are fixed there (`mecanum-lab`, tests/test_kf_header.py there):
+`send_kf(…, t=None)` now stamps the report with `last_stamp()` — the odometry's stamp, which is the moment
+`<hall> -> <robot>/odom` is broadcast — and `engine.config_json()` publishes the `tf` block on `/sim/config`,
+whose `RclpyBus._adopt_tf()` subscriber is what teaches a controller process the name the run gives its ground
+frame. Re-measured after the change, same command, one launch on the domain:
+
+```
+$ ros2 topic echo /alice/kf/pose --once
+header: {stamp: {sec: 20, nanosec: 539999998}, frame_id: hall}       # tf:=localizer
+header: {stamp: {sec: 25, nanosec: 259999999}, frame_id: map}        # tf:=sim: the frame follows the tree
+$ grep -o "frame '.*' at time .*" /tmp/clean_fixed.log | sort | uniq -c
+      1 frame 'alice/laser' at time 1.700 for reason 'discarding message because the queue is full'
+```
+
+against the same run with the change stashed:
+
+```
+      1 frame 'alice/laser' at time 1.640 for reason '… queue is full'
+     15 frame 'map'          at time 0.000 for reason '… queue is full'
+```
+
+Fifteen lines is not fifteen messages: tf2_ros logs a drop at most once per second, and the stream is 26 Hz,
+so the panel received none of them. The one line that survives the fix is the startup transient both runs have
+— RViz joins ~2 s after the simulator and throws away the scans stamped before its TF cache begins; the same
+line appeared in §15's runs, and it stops by itself after the first second. `rate of kf/pose` on the ROS door
+is 25.9 Hz, which is what §15 measured. `./tools/run_lab.sh grade --task mcl_production --controller
+solution/mcl_node.py --headless` after the change: `PASS 30.0/30 · accuracy 0.015 · max 0.036 · improvement
+12.76 · rate 34.1 · NEES 0.18`, and with the change stashed, on the same command: `0.015 · 0.037 · 12.47 ·
+34.1 · 0.19` — the in-process bus has no headers at all, so what moves here is the seed, as §17 already found
+for NEES.
+
+Two consequences for this repository, one of them a superseded sentence. §17 states that "asking the running
+graph which tree it is in is not possible — `/sim/config` carries the sensor profile and nothing else". It now
+carries `tf` too (`keys: debug_truth, gps, imu, lidar, odom, poi, rate, seed, steering, tf, truth, wifi`,
+measured), so `RosView`'s fallback — `tf_bcast.frame_for("kf", …, rob.sensor_profile())` — answers `hall` by
+itself, and `OHM_MCL_MAP_FRAME` from the launch has become a belt as well as braces. Nothing else of the
+launch changes: the frame is still spelled identically in the viewer, in `/map` and in the transform, because
+that is a decision and not a lookup. And `/{robot}/kf/pose` stays the topic the estimate panel reads — the
+ellipse it draws is the σ the grader scores as NEES, and a second copy of the answer would be one more number
+to reconcile.
