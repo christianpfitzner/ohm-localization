@@ -30,6 +30,29 @@ something this launch file can fix. Use `grade:=` to check that the wiring works
 number. `docs/verification.md` records whether the effect was measured in this checkout or inherited from
 that note.
 
+What you can say, and what it changes:
+
+  rviz:=auto        the viewer. auto opens it when there is a display to open it on and leaves it shut on a
+                    headless run, telling you so. `true` asks for it by name and fails if it is not there,
+                    `false` never
+  map:=auto         the hall as an occupancy grid on /map, which is what the picture is drawn on top of.
+                    auto starts it whenever the viewer does; `true`/`false` say so directly
+  tf:=localizer     who tells TF where the robot is. `localizer` (default) starts the simulator in its `slam`
+                    tree — where it publishes `odom -> base_link` and nothing above — and this node publishes
+                    `<hall> -> <robot>/odom` from the estimate, so the laser, which has nothing else to go on,
+                    sits on the walls its beams are matched against. `sim` puts the simulator back on that
+                    edge as the identity, which is the tree the Kalman lab ships: everything above the
+                    encoders drifts, up to 0.33 m, and closing that gap *is* that exercise. `truth` lets the
+                    simulator close it with the answer instead — the tutor's view, and not localisation
+  task:=<task>      the drive and the hall that goes with it: mcl_production, mcl_wide, mcl_budget,
+                    mcl_dirty — empty runs the hall with no commanded drive
+
+The picture is four things: the particle cloud (`/<robot>/particles`), the estimate and its covariance
+(`/<robot>/kf/pose`), the filter's own trail (`/<robot>/kf/path`) and the wheel encoders' trail in the same
+frame (`/<robot>/odom/path`) — the last two a few centimetres apart is the whole story of the run. The last
+three the bus already carries; the cloud and the transform are added by `ohm_localization/view.py`, off the
+same filter and beside the graded topic. `view.py` says why they only exist on this door.
+
 Every sensor argument is the same setting you would give without ROS:
 
     ./lab sim --set lidar.sigma=0.25 --set odom.bias_omega=0.004
@@ -55,6 +78,14 @@ from launch.event_handlers import OnProcessExit
 SHARE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRUE = ("true", "1", "yes", "on")
 
+# What each value of `tf:=` means: the name the hall's frame goes by in this run, and what the simulator is
+# told about it. Only the localiser's own value adds anything, because only it takes the edge away from the
+# simulator (`tf_bcast.tree()` reads `slam` as "stop publishing map -> odom, a mapping node owns it"; the two
+# other spellings leave the simulator where it started, with the frame named `map`).
+TF_TREES = {"localizer": ("hall", ("--set", "tf.tree=slam")),
+            "sim": ("map", ()),
+            "truth": ("map", ("--set", "tf.map_to_odom=truth"))}
+
 BASICS = [
     ("world", "production", "hall to drive in; the tasks of this exercise are calibrated on production"),
     ("robot", "alice", "your robot name (one person, one robot)"),
@@ -75,6 +106,7 @@ BASICS = [
                     "auto | true | false (auto = yes, unless this run is headless or has no DISPLAY)"),
     ("map", "auto", "also run this package's map_server, publishing /map as a nav_msgs/OccupancyGrid: "
                     "auto | true | false (auto = yes when the viewer runs, whose first panel is the hall)"),
+    ("tf", "localizer", "who publishes the hall -> odom transform: localizer | sim | truth"),
     ("log_level", "info", "info | debug | warning"),
     ("use_sim_time", "true", "use simulation time (/clock) for timestamps"),
 ]
@@ -116,6 +148,16 @@ def setup(context, *args, **kwargs):
 
     headless = arg("headless").lower() in TRUE
     robot = arg("robot")
+    # The top edge of the TF tree, decided before anything is started: `tf:=` names who tells TF where the
+    # robot is, and that decides what the hall's frame is called, which the viewer, the map server and the
+    # node all have to spell the same way. `localizer` (the default) is the AMCL convention — the simulator
+    # keeps `odom -> base_link` and `mcl_node` publishes `<hall> -> <robot>/odom` from the estimate, so the
+    # laser, which has nothing else, lands on the walls its beams are matched against instead of drifting
+    # 0.33 m off them (ohm_localization/view.py, docs/verification.md §17).
+    tree = (arg("tf") or "localizer").strip().lower()
+    if tree not in TF_TREES:
+        raise ValueError(f"tf:='{tree}' is not one of {', '.join(TF_TREES)}")
+    ground = TF_TREES[tree][0]
     env = {"MECANUM_LOG": arg("log_level"),
            "MECANUM_USE_SIM_TIME": "1" if arg("use_sim_time").lower() in TRUE else "0",
            "PYTHONPATH": os.pathsep.join([SHARE, os.environ.get("PYTHONPATH", "")])}
@@ -133,6 +175,7 @@ def setup(context, *args, **kwargs):
     for name, config_path, _comment in SETTINGS:
         if arg(name):
             sim += ["--set", f"{config_path}={arg(name)}"]
+    sim += list(TF_TREES[tree][1])        # the tree, which is not a sensor knob and so is not in SETTINGS
     if arg("truth").lower() in TRUE:
         sim.append("--truth")
     if arg("log"):
@@ -154,8 +197,12 @@ def setup(context, *args, **kwargs):
 
     sim_proc = L.ExecuteProcess(cmd=sim, additional_env=env, output="screen", name="mcl_sim",
                                 emulate_tty=True)
+    # The frame the node should call the hall, and publish its transform into. Given to the node alone, and
+    # left empty when the simulator kept the edge: two publishers on one child frame give it two parents, and
+    # a tree with two parents is not a tree but an error message at 20 Hz.
+    node_env = {**env, "OHM_MCL_MAP_FRAME": ground if tree == "localizer" else ""}
     parts = [sim_proc,
-             L.ExecuteProcess(cmd=node_cmd, additional_env=env, output="screen",
+             L.ExecuteProcess(cmd=node_cmd, additional_env=node_env, output="screen",
                               name=f"node_{robot}", emulate_tty=True)]
     # The run is over when the simulator says so (`seconds:=` or the task's drive): without this the
     # node outlives it and `ros2 launch` sits there until Ctrl-C.
@@ -201,20 +248,24 @@ def setup(context, *args, **kwargs):
             if SHARE not in sys.path:
                 sys.path.insert(0, SHARE)            # a launch from a checkout with nothing sourced
             from ohm_localization import rviz_config
-            config = rviz_config.render(robot)       # launch/mcl.rviz, with this robot in its topic names
+            # The frame goes into the file rather than onto the command line: `rviz_view.command()` knows only
+            # the config and the clock, and the simulator's own view does the same thing by editing the YAML.
+            config = rviz_config.render(robot, ground)   # launch/mcl.rviz, this robot in this hall's frame
             parts.append(L.ExecuteProcess(cmd=rviz_view.command(config,
                                                                 sim_time=arg("use_sim_time").lower() in TRUE),
                                           additional_env=env, output="screen", name="rviz"))
             rviz_started = True
-            note = (f"rviz: {config} — particles, kf/pose covariance, scan, odometry, path. The file to edit "
-                    f"is launch/mcl.rviz, not the one in /tmp")
+            note = (f"rviz: {config} on frame '{ground}' ({tree} owns the hall -> odom edge) — particles, "
+                    f"kf/pose covariance, scan, odometry, path. The file to edit is launch/mcl.rviz, not the "
+                    f"one in /tmp")
 
     # The map before the viewer, so the latched /map is already on the bus when RViz subscribes; `auto` here
     # means "yes, if there is a window that shows it", which is what the map is for in this exercise.
     if flag("map", "auto") == "true" or (flag("map", "auto") == "auto" and rviz_started):
         parts.append(L.ExecuteProcess(
-            cmd=[sys.executable, "-m", "ohm_localization.map_server_node", "--world", arg("world")],
-            additional_env=env, output="screen", name="map_server"))
+            cmd=[sys.executable, "-m", "ohm_localization.map_server_node", "--world", arg("world"),
+                 "--frame", ground],      # the grid and the transform must name one frame, or the robot
+            additional_env=env, output="screen", name="map_server"))   # floats beside its own hall
 
     # A `kind: "kf"` task is driven by the grader, so a run without `grade:=` needs its own driver or
     # the localiser spends the whole drive watching a robot that never left its spawn pose.
@@ -226,7 +277,8 @@ def setup(context, *args, **kwargs):
     sensors = "  ".join(f"{name}={arg(name)}" for name, _, _ in SETTINGS if arg(name))
     knobs = "  ".join(f"{name}={arg(name)}" for name, _, _ in MCL_ARGS if arg(name))
     parts.insert(0, L.LogInfo(msg=f"[mcl] task: {arg('task') or '—'} · world: {arg('world')} · robot: {robot}"
-                                 f" · node: {node_name} · sensors: {sensors or 'task profile'}"
+                                 f" · node: {node_name} · tf: {tree} on '{ground}'"
+                                 f" · sensors: {sensors or 'task profile'}"
                                  f" · filter: {knobs or 'task file / defaults'}"))
     if note:
         parts.append(L.LogInfo(msg=note))

@@ -26,6 +26,7 @@ from ohm_localization import paths
 
 TEMPLATE = os.path.join("launch", "mcl.rviz")
 PLACEHOLDER = "{robot}"
+GROUND_PLACEHOLDER = "{ground}"
 OUT = "/tmp/ohm_mcl_{robot}.rviz"
 
 
@@ -44,8 +45,13 @@ def text() -> str:
         return handle.read()
 
 
-def render(robot: str, out: str | None = None) -> str:
-    """Fill the template for one robot, write it, return the path to hand to `rviz2`.
+def render(robot: str, ground: str = "map", out: str | None = None) -> str:
+    """Fill the template for one robot and one hall frame, write it, return the path to hand to `rviz2`.
+
+    The second placeholder is not decoration: the frame the hall's own coordinates go by depends on who owns
+    the top of the TF tree (`view.py`), and it is `hall` in the default `tf:=localizer` run and `map` in a
+    `tf:=sim` one. A config whose Fixed Frame does not name the frame the grid and the transform are stamped
+    in is an empty window, and an empty window reads as a broken filter.
 
     A name with a `/` or a space in it is refused rather than cleaned: the simulator sanitises a robot name
     itself (`types.sanitize_name`), so the topics would come out as `/pfitz` while this file still said
@@ -58,10 +64,13 @@ def render(robot: str, out: str | None = None) -> str:
     name = str(robot or "").strip()
     if not name or any(bad in name for bad in ("/", " ")):
         raise ValueError(f"{robot!r} cannot be a robot name in a topic: no '/', no space, not empty")
+    frame = str(ground or "").strip()
+    if not frame or any(bad in frame for bad in ("/", " ")):
+        raise ValueError(f"{ground!r} cannot be a frame name: no '/', no space, not empty")
     target = out or OUT.format(robot=name)
     os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
     with open(target, "w", encoding="utf-8") as handle:
-        handle.write(body.replace(PLACEHOLDER, name))
+        handle.write(body.replace(PLACEHOLDER, name).replace(GROUND_PLACEHOLDER, frame))
     return target
 
 

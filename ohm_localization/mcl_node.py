@@ -199,6 +199,7 @@ def mission(rob, task):
                 trace.flush()
         e = f.estimate()                          # the newest estimate, on every loop, for `rate_min`
         view.publish(f.x, e, o.t)                 # throttled twice over: 10 Hz here, 50 Hz on kf/pose
+        view.odometry_tf(o, e, o.t)               # and the TF edge that stops the scan drifting off the map
         if o.t - letzter_meldung >= REPORT_DT:
             letzter_meldung = o.t
             rob.send_kf(e["x"], e["y"], e["theta"], e["sx"], e["sy"], e["sth"],

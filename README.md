@@ -47,8 +47,19 @@ ros2 launch ohm_localization mcl.launch.py
 ```
 
 The reference filter in the `production` hall, with RViz 2 open beside it: the particle cloud, the
-estimate with its 1σ ellipse, the LIDAR scan, the odometry trail and the path the filter drove. The
+estimate with its 1σ ellipse, the LIDAR scan, the wheel encoders' trail and the path the filter drove. The
 commanded drive of task L1 is driven for you. Ctrl-C ends the run.
+
+**The scan sits on the walls because the localiser says so.** A `LaserScan` carries no position, only the frame
+it was measured in (`<robot>/laser`), so where it is drawn is whatever TF says — and TF gets its top edge
+from whoever publishes it. By default this launch starts the simulator in the tree where it publishes
+`odom -> base_link` and nothing above, and `mcl_node` publishes `<hall> -> <robot>/odom` from the estimate:
+the LIDAR then stands where the filter believes it stands, a couple of centimetres off the truth instead of
+the 0.2–0.4 m the wheel encoders are off by. `tf:=sim` hands that edge back to the simulator, which fills it
+with the identity — the tree the Kalman lab ships, where everything above the encoders drifts and closing
+that gap is the exercise. `tf:=truth` lets the simulator close it with the answer, which is a tutor's view and
+not a localisation. Both trails are drawn in the hall's frame either way, so the distance between the blue
+line (what the wheels thought) and the green one (what the filter thinks) stays visible in all three.
 
 `rviz:=false` runs without the window, `map:=false` without the `/map` topic the hall is drawn from, and
 `ros2 launch ohm_localization mcl.launch.py --show-args` lists every argument:
@@ -156,6 +167,8 @@ arguments. The environment beats the task file.
 | `/<robot>/kf/pose` | out | `geometry_msgs/PoseWithCovarianceStamped` — x, y, θ and their σ, which is graded |
 | `/<robot>/particles` | out (ROS only) | `geometry_msgs/PoseArray` — the cloud, for the RViz view |
 | `/<robot>/kf/path` | out (ROS only) | `nav_msgs/Path` — the estimate's own trail |
+| `/<robot>/odom/path` | out (ROS only) | `nav_msgs/Path` — the wheel poses in the same frame, i.e. the drift |
+| `/tf` | out (ROS only, `tf:=localizer`) | `<hall> -> <robot>/odom`, from the estimate; what puts the scan on the walls |
 | `/sim/world`, `/sim/task` | in | the node asks which hall and which task; it hard-codes neither |
 
 ## 9 · When it does not work
@@ -172,6 +185,8 @@ arguments. The environment beats the task file.
 | grading says `rate of kf/pose 0.0` | you graded through `ros2 launch`; use `./tools/run_lab.sh grade …` |
 | the estimate is good and NEES is out of its band | N_eff counts particles, not places: the cloud can stand in 13 boxes of 5 cm while N_eff is 1200 |
 | RViz shows no particles | the localiser is not running, or it is a `./tools/run_lab.sh run` session: `/particles` exists on the ROS door only |
+| the LIDAR fan lies off the walls, further away the longer the drive goes on | TF, not the filter: the scan is drawn where the top edge of the tree puts it, and `tf:=sim` makes that edge the identity, so the fan follows the wheel encoders. `tf:=localizer` (the default) publishes it from the estimate. 0.20 m against 0.016 m mean off the truth, in the `production` hall |
+| the frame is called `hall` and not `map` | one name for one place: the simulator calls its ground frame `hall` in the tree where the localiser owns the top edge, and the launch spells it identically in RViz, in `/map` and in the transform. `tf:=sim` gives you `map` back |
 
 ## 10 · Layout
 

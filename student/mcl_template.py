@@ -7,9 +7,11 @@
 **What is already here, and why.** The node lifecycle (`serve()` at the bottom, one mission per task), the
 map (`load_map`, from the simulator's own hall text, with the exact clearance field), the initial cloud, the
 motion model with its `rot1 / trans / rot2` decomposition and its noise **rates**, the N_eff trigger, the
-systematic resampling, the estimate with its circular mean of the heading, and the two topics RViz reads
+systematic resampling, the estimate with its circular mean of the heading, and everything RViz reads — the two
+trails, the cloud and the `TF` edge that puts the LIDAR fan on the walls instead of on the odometry
 (`ros2 launch ohm_localization mcl.launch.py controller:=student/mcl_template.py` shows *your* cloud
-collapsing, because `ohm_localization/view.py` publishes it). Those are the parts where a mistake costs an
+collapsing and *your* scan where you believe the robot is, because `ohm_localization/view.py` publishes it).
+Those are the parts where a mistake costs an
 afternoon and teaches nothing: the rate semantics of the motion noise, for instance, cost a whole day of this
 repository's development and are documented in `docs/mcl.md` — a group should not have to reinvent them
 inside 180 minutes to be allowed to learn about sensor models.
@@ -254,6 +256,7 @@ def mission(rob, task):
             f.update(scan)
         e = f.estimate()
         view.publish(f.x, e, o.t)               # the cloud you are running, for RViz (`rviz:=true`)
+        view.odometry_tf(o, e, o.t)             # and the transform that keeps your scan on the walls
         if o.t - letzter >= REPORT_DT:
             letzter = o.t
             rob.send_kf(e["x"], e["y"], e["theta"], e["sx"], e["sy"], e["sth"],

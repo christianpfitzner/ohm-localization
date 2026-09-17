@@ -15,16 +15,26 @@
 #               the NEES band is there to catch.
 #   lidar scan  `/<robot>/scan`, the measurement the sensor model is matching against the map.
 #   map         `/map` from this package's map_server: without it the estimate is an arrow in the void.
-#   odometry    `/<robot>/odom` with Keep 200: the wheel path, which is what drifts 0.2-0.4 m over a drive
-#               and what the filter has to be better than. Its covariance is off on purpose — the
-#               simulator fills that field with fixed placeholders, not with a belief.
+#   odometry    `/<robot>/odom/path`: where the wheel encoders thought the robot was, drawn in the hall's
+#               frame — the one line still showing the 0.2–0.4 m of drift once the localiser owns the top edge
+#               of TF, because an Odometry display on `/<robot>/odom` is drawn *through* that correction and
+#               lands on the estimate. See ohm_localization/view.py.
 #   path        `/<robot>/kf/path`, the filter's own trail: 15 mm of RMSE is a number, this is the shape.
+#               Where the green line leaves the blue one is the drift; where the green one stays on the walls
+#               is the localiser.
 #   truth       `/<robot>/truth`, off by default. It is the answer, and it is only published when the sim
 #               runs with `truth:=true` (the launch default). Check it on to see the gap between the
 #               estimate and the ground truth, check it off to see what the students see.
 #
-# Fixed frame `map`, the root of the tree the simulator broadcasts (map -> <robot>/odom -> <robot>/base_link
-# -> <robot>/laser, see the simulator's `tf_bcast.py`), and every topic says `Reliability Policy: Reliable`: the
+# Fixed frame `{ground}`, filled in by the launch, because which frame that is depends on who publishes the
+# top edge of the tree (`tf:=`, launch/mcl.launch.py): the simulator calls the hall `hall` in the mode where
+# the localiser owns `hall -> <robot>/odom` — its `slam` tree, which is the default here — and `map` when it
+# keeps that edge itself. Below the top edge the tree is the simulator's in both cases:
+# `-> <robot>/odom -> <robot>/base_link -> <robot>/laser`, see its `tf_bcast.py`. A Fixed Frame that does not
+# name the frame the grid and the transform are stamped in is an empty window, and an empty window in a
+# two-hour lab gets diagnosed as a broken filter.
+#
+# Every topic says `Reliability Policy: Reliable`: the
 # simulator publishes standard QoS on purpose, RViz defaults a LaserScan to best effort, and the two never
 # find each other — "no data" with a running publisher is that, and `/map` additionally needs
 # `Durability Policy: Transient Local` because the map is latched (map_server_node.py).
@@ -173,45 +183,28 @@ Visualization Manager:
         Value: /map_updates
       Use Timestamp: false
       Value: true
-    - Angle Tolerance: 0.1
-      Class: rviz_default_plugins/Odometry
-      Covariance:
-        Orientation:
-          Alpha: 0.5
-          Color: 255; 255; 127
-          Color Style: Unique
-          Frame: Local
-          Offset: 1
-          Scale: 1
-          Value: true
-        Position:
-          Alpha: 0.3
-          Color: 204; 51; 204
-          Scale: 1
-          Value: true
-        Value: false
+    # Not the Odometry display, which would transform each wheel pose into the fixed frame — and once the
+    # localiser publishes the top edge of TF, that transformation cancels the drift and lands every pose on
+    # the estimate, which is the one thing worth seeing. `/{robot}/odom/path` is the same numbers stamped in
+    # the hall's frame by the node, so they stay where the encoders put them.
+    - Alpha: 1
+      Class: rviz_default_plugins/Path
+      Color: 96; 170; 230
+      Color Transformer: FlatColor
       Enabled: true
-      Keep: 200
-      Name: odometry (wheel path)
-      Position Tolerance: 0.1
-      Shape:
-        Alpha: 1
-        Axes Length: 1
-        Axes Radius: 0.1
-        Color: 96; 170; 230
-        Head Length: 0.1
-        Head Radius: 0.04
-        Shaft Length: 0.2
-        Shaft Radius: 0.015
-        Value: Arrow
+      Head Length: 0.1
+      Head Radius: 0.04
+      Length: 0.15
+      Name: odometry (what the wheels thought)
+      Queue Size: 2
       Topic:
-        Depth: 5
+        Depth: 2
         Durability Policy: Volatile
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /{robot}/odom
+        Value: /{robot}/odom/path
       Unreliable: false
+      Use Arrow: true
       Value: true
     - Alpha: 1
       Class: rviz_default_plugins/Path
@@ -277,7 +270,7 @@ Visualization Manager:
   Global Options:
     Background Color: 33; 36; 43
     Default Light: true
-    Fixed Frame: map
+    Fixed Frame: {ground}
     Frame Rate: 30
   Name: root
   Tools:

@@ -651,3 +651,103 @@ on), and a graph that dies mid-wait (the end of the waiting, not of the run). Th
 of the change are the same run: template `FAIL 0/30` with `accuracy 0.68 / improvement 0.27 / 5.3 Hz` before
 and after, solution `PASS 30/30` with `accuracy 0.015 / 34.1 Hz` before and after — the bug never touched the
 door that grades, which is exactly why it was invisible.
+
+## 17. The scan was drawn where the wheel encoders thought the robot was
+
+Reported from the window, not from a test: "the lidar is tied to the odometry TF; after a few metres it is no
+longer aligned with the ground map." Measured rather than guessed, with a throwaway node that subscribes to
+`/tf` and `/alice/truth` and asks TF the question RViz asks for every scan (`/tmp/probe_tf.py`, kept off the
+suite because it needs a running graph):
+
+```
+python3 /tmp/probe_tf.py map alice        # during: ros2 launch ohm_localization mcl.launch.py rviz:=false
+```
+
+```
+1198 lookups over 25 s on a map->alice/laser chain
+max over the drive   laser 0.325 m   base_link 0.325 m   kf/pose 0.042 m
+mean over the drive  laser 0.163 m   base_link 0.163 m   kf/pose 0.015 m
+tf: 256 transforms naming alice/odom as their child, from ['map']
+```
+
+`laser` and `base_link` are the same number to the micrometre, which is the whole diagnosis in one line: the
+mount transform is identity in x/y, so the fan's position is exactly the position of `base_link`, and
+`map -> base_link` is whatever `map -> odom` says. The simulator's `tf_bcast.py` answers why that one is the
+identity, and says it twice — once in the config comment (`tf.map_to_odom: identity by default`) and once in
+prose: the KF lab wants `map -> base_link` to *be* the drifting odometry, so that students close the gap with
+their own filter instead of receiving it from the simulator. A localisation exercise added on top of that tree
+inherits the drift as its picture. The filter was never the problem: `kf/pose` was 0.015 m off truth while the
+scan drawn from TF was 0.163 m off, next to a map its beams are matched against.
+
+**The fix is the one the simulator already reserved.** `tf_bcast.tree()` reads `tf.tree: slam` as "stop
+publishing the top edge, a mapping node owns `map -> odom`" — the AMCL convention, and the reason the frame is
+renamed to `hall` in that mode. So the node that knows where the robot is publishes that edge, from the two
+numbers its loop already holds:
+
+    T_hall_odom = T_hall_base · T_odom_base⁻¹        →  view.correction(estimate, odom)
+
+which on a plane is a rotation of `θ_est − θ_odom` and a translation of the estimate minus that rotation
+applied to the odometry pose — the same three lines `tf_bcast.dynamic_tree()` computes when it is told to close
+the gap with the *truth* (`tf.map_to_odom: truth`), with the filter's number where the answer would be. The
+difference between a tutor view and a localiser. Published per odometry message (50 Hz) rather than at the
+view's 10 Hz, because the transform is only as fresh as its inputs and a stale one is worth 5 cm at 0.5 m/s —
+three times the error the filter is proud of.
+
+Re-measured after the change, same command, same hall, same seed, first number now `hall`:
+
+```
+4530 lookups over 25 s on a hall->alice/laser chain
+max over the drive   laser 0.054 m   base_link 0.054 m   kf/pose 0.051 m
+mean over the drive  laser 0.016 m   base_link 0.016 m   kf/pose 0.014 m
+tf: 1247 transforms naming alice/odom as their child, from ['hall']
+frames with two parents (a tree must have none): none
+```
+
+and the same launch with `tf:=sim`, which leaves the old tree in place, as the control:
+
+```
+2063 lookups over 25 s on a map->alice/laser chain
+max over the drive   laser 0.359 m   base_link 0.359 m   kf/pose 0.042 m
+mean over the drive  laser 0.204 m   base_link 0.204 m   kf/pose 0.015 m
+tf: 256 transforms naming alice/odom as their child, from ['map']
+```
+
+Mean off truth: **0.204 m of odometry against 0.016 m of localisation**, 13×, and the fan now sits on the
+estimate rather than beside it. `kf/pose` is unchanged between the runs, as it must be — the transform reads
+the filter and never the other way round. Graded door after the change, unchanged to the reported digit:
+`PASS 30/30 · accuracy 0.015 · rate 34.1 Hz · NEES 0.19` (NEES was 0.18 in §15; both are inside the band, and
+the difference is the run, not the code — the in-process bus publishes no TF at all and `odometry_tf()` returns
+on its first line there).
+
+Two things came out of owning the edge, both in the launch rather than in the node:
+
+- **The frame's name follows the publisher.** In `slam` mode the simulator stamps `truth`, `gps` and `kf` with
+  `hall`, so the localiser's transform must be into `hall` too and the fixed frame must say `hall` — three
+  processes agreeing on one name, given by `TF_TREES` in `launch/mcl.launch.py` and passed as
+  `OHM_MCL_MAP_FRAME` to the node, `--frame` to the map server and `{ground}` to `launch/mcl.rviz`. `map` is
+  not wrong, it is just the name of the *other* tree, and one place must not have two names: `/map`'s frame,
+  the cloud's frame and the Fixed Frame are the same string in a run or the window is empty. Asking the
+  running graph which tree it is in is not possible — `/sim/config` carries the sensor profile and nothing
+  else (`keys: debug_truth, gps, imu, lidar, odom, poi, rate, seed, steering, truth, wifi`, measured), so the
+  launch that started the simulator is the only party that knows, which is why it says so.
+- **The drift had to be drawn by hand afterwards.** Correcting the odometry *is* the estimate, so an RViz
+  `Odometry` display on `/<robot>/odom` — which transforms into the fixed frame, as it must — lands on the
+  filter's path and the one visible consequence of the fix is the thing that disappears from the window.
+  `/<robot>/odom/path` is the same wheel poses stamped in the hall's frame by the node, the `Odometry` display
+  is gone from `mcl.rviz`, and the gap between the blue and the green line is the drift again in all three
+  `tf:=` modes.
+
+Covered without a simulator: the composition a TF consumer performs, in four poses including the wrap at ±π
+(`test_the_correction_is_the_estimate_and_not_the_odometry` — a sign error would put the fan behind the wall it
+measured), zero correction for a robot that has not drifted, one transform per odometry message rather than per
+loop iteration, the parent and child frame names, the trail carrying the wheel poses and not the corrected ones,
+no `/tf` publisher at all when the launch named no frame (the graded door, `tf:=sim`, `./lab run`), and each
+half of `odometry_tf()` failing alone. Plus the launch default itself, asserted as `tf == "localizer"`: the day
+someone "simplifies" it back to the simulator's tree, the scan starts drifting again and the test says so.
+
+One finding from the same measurements is not ours: two launches on one machine, both naming their robot
+`alice`, give `<robot>/odom` two parents and TF reports `TF_OLD_DATA … ignoring data from the past` at 20 Hz
+while the scan jumps to 4 m off truth. Two `ros2 launch` runs of this exercise on one DDS domain are therefore
+not two independent pictures but one broken one, and it is visible only in the terminal. Nothing in this
+repository prevents it — a `ROS_DOMAIN_ID` per group would — so the check is before the symptom: one run per
+domain.

@@ -29,11 +29,13 @@ from __future__ import annotations
 
 from collections import deque
 import math
+import os
 import sys
 
 VIEW_DT = 0.1          # s between two frames: 10 Hz of picture next to the 50 Hz of kf/pose
 CLOUD_MAX = 400        # arrows per frame, see cloud_stride()
 PATH_MAX = 2000        # poses on the path before the oldest drops off (200 s at VIEW_DT)
+MAP_FRAME_ENV = "OHM_MCL_MAP_FRAME"
 
 
 def cloud_stride(n: int) -> int:
@@ -57,6 +59,30 @@ def node_of(rob):
     return getattr(getattr(rob, "bus", None), "node", None)
 
 
+def _wrap(a: float) -> float:
+    """An angle into (−π, π], so a heading of 7π and one of π are the same correction."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def correction(estimate: dict, odom) -> tuple:
+    """`(x, y, yaw)` of the hall frame as seen from the odometry frame — the edge a localiser owns.
+
+    The composition is `T_hall_odom = T_hall_base · T_odom_base⁻¹`, which on a plane is a rotation of
+    `estimate.theta − odom.theta` and a translation of the estimate minus that rotation applied to the odometry
+    pose. `tf_bcast.dynamic_tree()` computes exactly these three lines when the simulator is told to close the
+    gap with the *truth* (`tf.map_to_odom: truth`); this is the same arithmetic with the filter's number where
+    the answer would be — which is the difference between a tutor view and a localiser.
+
+    Publish it and every TF consumer stops believing the wheel encoders: `<hall> -> <robot>/base_link` becomes
+    the estimate, so the laser — which has nothing but TF to tell it where it is — lands on the walls of the
+    map its beams are matched against.
+    """
+    dyaw = _wrap(float(estimate["theta"]) - float(odom.theta))
+    cos, sin = math.cos(dyaw), math.sin(dyaw)
+    return (float(estimate["x"]) - (cos * odom.x - sin * odom.y),
+            float(estimate["y"]) - (sin * odom.x + cos * odom.y), dyaw)
+
+
 def _pose(M, x: float, y: float, yaw: float):
     """A planar pose as a `geometry_msgs/Pose`.
 
@@ -72,16 +98,26 @@ def _pose(M, x: float, y: float, yaw: float):
 
 
 class RosView:
-    """The cloud and the path on two topics — or nowhere, with the same methods.
+    """The cloud, both trails and the TF edge — or nowhere, with the same methods.
 
-    `publish()` does nothing while the view is off, throttles both topics to `VIEW_DT` while it is on, and
-    switches itself off on a publish that raises. A view is not a reason to stop localising, and it is
+    `publish()` and `odometry_tf()` do nothing while the view is off, throttle the picture to `VIEW_DT`, and
+    switch themselves off when a publish raises. A view is not a reason to stop localising, and it is
     certainly not a reason for a graded run to come back as `failed:RCLError`.
+
+    The two trails are deliberately in the same frame, which is the only way to see the thing the exercise is
+    about: `kf/path` is what the filter believes and `odom/path` is what the wheel encoders believe, both in
+    hall coordinates, so the growing gap between the two lines *is* the drift. Publishing the transform does
+    not hide that — the RViz `Odometry` display would otherwise be drawn through that same transform and land
+    on top of the estimate, since a corrected odometry pose is the estimate by construction.
     """
 
-    def __init__(self, rob, dt: float = VIEW_DT):
+    def __init__(self, rob, dt: float = VIEW_DT, map_frame: str | None = None):
         self.dt, self.last, self.poses = float(dt), -1e9, deque(maxlen=PATH_MAX)
-        self.node, self.on, self.frame = node_of(rob), False, "map"
+        self.wheel, self.wheel_last, self.wheel_last_t = deque(maxlen=PATH_MAX), -1e9, -1.0
+        self.node, self.on, self.robot = node_of(rob), False, getattr(rob, "name", "")
+        self.frame = "map"
+        self.tf_frame = str(map_frame if map_frame is not None
+                            else os.environ.get(MAP_FRAME_ENV) or "").strip()
         if self.node is None:
             return                                    # in-process bus: no node, no viewer, and no complaint
         try:
@@ -91,17 +127,33 @@ class RosView:
             self.M = ros_bridge.load_msgs()
             if self.M is None:                        # rclpy half-there: the classes are the other half
                 raise ImportError("the ROS message classes are not importable")
-            self.frame = tf_bcast.frame_for("kf", rob.name, rob.sensor_profile())
+            # What the hall's coordinates are called in this run. Asked of the launch, not of the running
+            # graph: `/sim/config` carries sensor settings and nothing else, so `tf.tree` — which is what
+            # decides whether that frame is `map` or `hall` — cannot be read back over the bus, and the local
+            # config file would always answer the default. Without a name from the launch, the simulator owns
+            # the top edge and this view must stay out of TF.
+            self.frame = self.tf_frame or tf_bcast.frame_for("kf", rob.name, rob.sensor_profile())
             self._PoseArray, self._Path, self._PoseStamped = PoseArray, Path, PoseStamped
             self._cloud = self.node.create_publisher(PoseArray, f"/{rob.name}/particles", 10)
             self._path = self.node.create_publisher(Path, f"/{rob.name}/kf/path", 10)
+            self._odom_path = self.node.create_publisher(Path, f"/{rob.name}/odom/path", 10)
+            self._tf = None
+            if self.tf_frame:
+                if self.M.get("TFMessage") and self.M.get("TransformStamped"):
+                    self._tf = self.node.create_publisher(self.M["TFMessage"], "/tf", 10)
+                else:
+                    print(f"view: {MAP_FRAME_ENV}={self.tf_frame} but tf2_msgs is not importable — the "
+                          f"topics are in '{self.tf_frame}' and nothing publishes the transform into it",
+                          file=sys.stderr)
             self.on = True
         except Exception as exc:                      # noqa: BLE001 - a view nobody can build is not a crash
-            print(f"view: /particles and /kf/path stay off ({type(exc).__name__}: {exc})", file=sys.stderr)
+            print(f"view: /particles, the two paths and /tf stay off ({type(exc).__name__}: {exc})",
+                  file=sys.stderr)
 
     def reset(self) -> None:
-        """Forget the trail: the path of a filter that was restarted is two drives drawn as one line."""
+        """Forget both trails: the path of a filter that was restarted is two drives drawn as one line."""
         self.poses.clear()
+        self.wheel.clear()
 
     def header(self, t: float):
         """The measurement's stamp and the hall's frame — never the wall clock.
@@ -117,7 +169,8 @@ class RosView:
         return head
 
     def publish(self, poses, estimate: dict, t: float) -> None:
-        """One frame of both topics: `poses` the (n,3) cloud, `estimate` the filter's `estimate()`."""
+        """One frame of the cloud and of the estimate's trail: `poses` the (n,3) array, `estimate` the filter's.
+        """
         if not self.on or t - self.last < self.dt:
             return
         self.last = t
@@ -134,11 +187,51 @@ class RosView:
         cloud.poses = [_pose(self.M, p[0], p[1], p[2]) for p in poses[::stride]]
         self._cloud.publish(cloud)
 
-        track = self._PoseStamped()
-        track.header = self.header(t)
-        track.pose = _pose(self.M, estimate["x"], estimate["y"], estimate["theta"])
-        self.poses.append(track)
+        self.poses.append(self._stamped(t, estimate["x"], estimate["y"], estimate["theta"]))
         line = self._Path()
         line.header = self.header(t)
         line.poses = list(self.poses)                 # the whole trail, every frame: a Path is not a stream
         self._path.publish(line)
+
+    def _stamped(self, t: float, x: float, y: float, yaw: float):
+        msg = self._PoseStamped()
+        msg.header = self.header(t)
+        msg.pose = _pose(self.M, x, y, yaw)
+        return msg
+
+    def odometry_tf(self, odom, estimate: dict, t: float) -> None:
+        """`<hall> -> <robot>/odom` on every odometry message, and the wheel trail on every view frame.
+
+        The transform runs at the rate of its inputs rather than at the view's 10 Hz: at 10 Hz a robot doing
+        0.5 m/s moves 5 cm between two of them, which is three times the error the filter is proud of. And it
+        is silent unless the launch named the hall's frame, because naming that frame is how the launch says
+        *the simulator has stepped back from this edge* (`tf.tree: slam`) — two publishers on one child frame
+        give it two parents, and TF is a tree.
+        """
+        if not self.on or odom is None or getattr(odom, "t", None) == self.wheel_last_t:
+            return
+        self.wheel_last_t = odom.t
+        if self._tf is not None:
+            try:
+                x, y, yaw = correction(estimate, odom)
+                tr = self.M["TransformStamped"]()
+                tr.header = self.header(t)                    # parent: the hall
+                tr.child_frame_id = f"{self.robot}/odom"
+                tr.transform.translation.x, tr.transform.translation.y = x, y
+                tr.transform.rotation.z, tr.transform.rotation.w = \
+                    math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+                self._tf.publish(self.M["TFMessage"](transforms=[tr]))
+            except Exception as exc:                          # noqa: BLE001 - the run goes on without it
+                self._tf = None
+                print(f"view: /tf closed ({type(exc).__name__}: {exc})", file=sys.stderr)
+        if t - self.wheel_last >= self.dt:
+            self.wheel_last = t
+            try:
+                self.wheel.append(self._stamped(t, odom.x, odom.y, odom.theta))
+                line = self._Path()
+                line.header = self.header(t)
+                line.poses = list(self.wheel)     # the encoders' opinion, in hall coordinates: the drift, drawn
+                self._odom_path.publish(line)
+            except Exception as exc:                          # noqa: BLE001 - see the class docstring
+                self.on = False
+                print(f"view: stopped ({type(exc).__name__}: {exc})", file=sys.stderr)
