@@ -90,13 +90,24 @@ SCAFFOLD_WHY = ("The graded run is one number and takes about 36 s. One recordin
 
 
 def load(path):
-    """The task file, in the order the grader runs it, with every rendered field checked on the way."""
+    """The task file, in the order the grader runs it, with every rendered field checked on the way.
+
+    Only the tasks marked for the printed sheet are rendered. The MCL block (L1 … L4) is what a tutor prints for
+    the M2 visit, and the sheet template is that block's shape — a NEES band, a particle budget, a prior σ. E3's
+    task lives in the same file because the same grader runs it, but it is graded on *improvement over deliberately
+    bad wheels* and has no NEES band at all (deliberately: `docs/exercises.md` explains why an integrated pose's
+    NEES is not a mark), so it carries `"handout": false` and its sheet is the generated
+    `docs/handout/lab-e3_icp_odom.md` instead. Skipping it is not the same as not knowing about it: the point total
+    below, and therefore the total printed on the PDF, is the sum of what is actually rendered.
+    """
     with open(path, encoding="utf-8") as fh:
         cfg = json.load(fh)
     if not isinstance(cfg.get("tasks"), list) or not cfg["tasks"]:
         raise SystemExit(f"{path}: no 'tasks' list to render")
     by_id = {}
     for task in cfg["tasks"]:
+        if not task.get("handout", True):
+            continue
         for key in REQUIRED:
             if key not in task:
                 raise SystemExit(f"{path}: task {task.get('id', '?')!r} has no {key!r} — "
@@ -110,8 +121,8 @@ def load(path):
     missing = [t for t in by_id if t not in order]
     if missing:
         raise SystemExit(f"{path}: tasks not in 'order': {missing}")
-    return [by_id[t] for t in order], {"points": sum(t["points"] for t in by_id.values()),
-                                       "pass_from": cfg.get("pass_from", 50)}
+    return [by_id[t] for t in order if t in by_id], {"points": sum(t["points"] for t in by_id.values()),
+                                                    "pass_from": cfg.get("pass_from", 50)}
 
 
 def _tex_escape(text, tt=False):

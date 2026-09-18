@@ -289,13 +289,21 @@ order = cfg.get("order") or list(tasks)
 assert order == list(tasks), f"order {order} does not match the tasks {list(tasks)}"
 for t in tasks.values():
     for key in ("world", "drive", "rmse_max", "improvement_min", "max_error_max",
-                "rate_min", "contacts_max", "nees", "text", "checks", "mcl", "sim"):
+                "rate_min", "contacts_max", "text", "checks", "points", "sim"):
         assert key in t, f"{t['id']}: no {key!r}"
-    assert 0.0 < t["nees"][0] < t["nees"][1], f"{t['id']}: NEES band {t['nees']}"
+    # NEES is optional and its absence is a decision, not an omission: E3's estimate is an integrated pose, whose
+    # error is bias, and grading its NEES would reward the odometry fallback (docs/exercises.md, §E3). A task that
+    # does declare a band must declare a usable one.
+    if "nees" in t:
+        assert 0.0 < t["nees"][0] < t["nees"][1], f"{t['id']}: NEES band {t['nees']}"
+    # The model the controller runs: a particle filter or a scan matcher. A task with neither has no sheet.
+    assert "mcl" in t or "icp" in t, f"{t['id']}: neither an 'mcl' nor an 'icp' block — what runs this task?"
     assert t["kind"] == "kf" and t["sensor"] == "odom", f"{t['id']}: must be a kf task graded against odom"
     assert t["sim"].get("debug_truth") is True, f"{t['id']}: the grader needs debug_truth"
+no_nees = [i for i, t in tasks.items() if "nees" not in t]
 print(f"  ok      task file: {len(tasks)} tasks, {sum(t['points'] for t in tasks.values())} points, "
-      f"all kind=kf against sensor=odom")
+      f"all kind=kf against sensor=odom"
+      + (f" ({', '.join(no_nees)} graded without a NEES band, on purpose)" if no_nees else ""))
 PY
 then :; else bad "config/tasks_localization.json is not what the launcher expects"; last 4; fi
 

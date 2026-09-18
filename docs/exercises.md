@@ -1,4 +1,128 @@
-# The exercise sheets — L1 … L4, and the machinery around them
+# The exercise sheets — the five exercises, and the machinery around them
+
+Five exercises over four 180-minute visits, **260 points**. The student-facing sheet of each one is generated
+into `docs/handout/lab-<id>.md` from `config/exercises_localization.json`, which is also what the graders read;
+the plan a tutor runs from is [`lab-plan.md`](lab-plan.md). **E5 is the four graded tasks this page documents at
+length** — they were here first, and they are the ones the print handout is about.
+
+| | exercise | written by hand | points | what the reference scores | what the shipped template scores |
+|---|---|---|---|---|---|
+| E1 | nearest neighbour | `student/nn_template.py` | 20 | 20/20, 0.31 ms | 0/20 |
+| E2 | one pair, and its σ | `student/icp_pair_template.py` | 30 | 30/30, 7.1 mm median | 0/30 |
+| E3 | scan matching as odometry | `student/icp_odom_template.py` | 30 | PASS, 1.07 m, 3.74× | FAIL, 3.97 m, 1.00× |
+| E4 | the particles of MCL | `student/particles_template.py` | 50 | 50/50 | 0/50 |
+| E5 | the complete localiser | `student/mcl_template.py` | **130** | **130/130** | 0/130 |
+
+E1, E2 and E4 are graded by `python3 tools/lab_check.py` on seeded synthetic data; E3 and E5 by the simulator's
+own grader. Both halves of that split are asserted: `python3 tools/lab_check.py --check` and
+`python3 -m pytest test/test_exercises.py` require the reference solutions to meet every criterion and the
+shipped templates to earn nothing, and `./tools/check.sh --live` re-runs the two robot exercises.
+
+Where a threshold needed a judgement, the reason is below; where a number came from a run, the run is in
+[`verification.md`](verification.md).
+
+### E1 · why a speed criterion in a localisation course
+
+20 ms on a 353 × 351 cloud, where the reference takes 0.28 … 0.36 ms and the two-loop version 52 ms. The band is not
+about speed for its own sake: one scan period at 20 Hz is 50 ms, and a matcher that needs 52 ms per *correspondence
+step* cannot run at all — the exercise would then be graded on a machine that cannot execute the submission.
+Two orders of magnitude separate the implementations, so a group cannot reach the threshold by accident, and the
+blocked and unblocked variants are accepted at the same threshold because the blocking is about memory, not speed:
+with 353 source rows the blocked version executes one block. What does cost a factor of nine is asking numpy for
+`np.linalg.norm(..., axis=2)` over a 2 MiB temporary — 3.1 ms measured — and that version passes too, which is what
+the ~60× margin between the reference and the band is for: the band separates "vectorised" from "still looping", and
+nothing else.
+
+The correctness criterion is eight shapes rather than a handful of random clouds, and two of them (1 × 500 and
+500 × 1) exist because a wrong `argmin` axis is the most likely bug and is invisible on a square cloud. The
+task is deliberately graded against an independent two-loop implementation of the same definition rather than
+against the library's `icp.nearest_neighbour`: the exercise is to write that function, not to rediscover its API.
+
+### E2 · why the σ is 12 of the 30 points
+
+Because it is the part a group cannot copy and the part the lecture cannot check. Two of its criteria need care:
+
+* **`sigma-not-invented`** asks that the reported σ *vary* between pairs (spread/mean ≥ 0.15 on x and y). The
+  reference varies 1.6 … 9.2 mm, because a pair looking at a corner is pinned harder than one looking at a long
+  wall. A constant σ is the fingerprint of a copy — and a hard-coded σ is exactly the kind of thing that passes a
+  criterion about *size* and is worthless.
+* **`degeneracy-is-reported`** accepts either a condition number ≥ 100 or an honestly large σ. That disjunction is
+  measured, not diplomatic: in the bare corridor the naive fit reports **σ 21 mm along the corridor** at a
+  **condition number of 2644** (the hall pairs sit at 9), because the beam noise tilts the locally fitted wall
+  segments and a near-null direction collects its σ from that tilt rather than from the geometry. Expecting the σ
+  alone to shout would grade vocabulary — `test/test_icp.py` has the same effect at 1.2 mm — so the criterion asks
+  for either the number that does shout, or a σ that has been widened on purpose, and the viva asks which one the
+  group produced.
+
+The twelve fixture pairs are chosen so that the identity explains them badly (mean match ≥ 0.4 m) and the truth
+explains them well (< 0.03 m): a pair taken in a corner would score a matcher that did nothing, and that is the
+failure mode a threshold of `1.3 × the truth's fit` would hide. `robustness` asks 10 of 12 within 60 mm from a
+deliberately wrong first guess because the reference, measured, gets 11 of 12 there and 12 of 12 from the
+identity — one pair of the twelve genuinely needs the given guess, and a criterion that asked for 12 would be a
+coin flip about the seed. Push the guess further (250 mm along x) and the same twelve pairs split 9 / 3: nine land
+within 10 mm, three end at **1.91 m, 4.89 m and 5.30 m** — and there the mean correspondence distance is
+**342 … 565 mm against 28 … 30 mm** at the truth. A wrong basin is not a subtle failure, it is a fitness twenty
+times off; that is the measurement behind `fits-as-well-as-the-truth`, behind E3's `FIT_MAX`, and behind the
+instruction to print the fitness rather than the step size.
+
+### E3 · why improvement ≥ 2 over deliberately bad wheels
+
+The task makes the odometry wrong in the way a badly calibrated robot is wrong: `scale_xy = 1.12` and a yaw rate
+bias of 0.10 rad/s. Measured on one 34 s drive, raw odometry ends **3.98 m** out; the shipped template — which
+integrates exactly that, because `scan_step()` is the TODO — scores 3.97 m and an improvement of **1.00**, and the
+reference scores **1.07 m at 3.74×**. The threshold sits at 2.0× because the discriminator it has to provide is
+binary: partial credit for a matcher that rejects most of its own measurements is meaningless when the fallback
+scores 1.00 and a working one scores 3.74.
+
+* **NEES is deliberately not a criterion.** The error of an *integrated* pose is bias, not noise, and the σ a fit
+  can honestly publish about a pair — widened by √pairs, which is the right *form* — does not describe it. The
+  reference scores NEES 111.3 while the wheel-step fallback scores 15.2: grading NEES here would grade the shape
+  of the error rather than its size, and would reward the fallback. E5 grades NEES, on a filter whose estimate is
+  an average of hypotheses rather than an integral.
+* **`contacts_max = 0` while a wrong guess is part of the exercise.** A contact stops the drive and spoils the
+  comparison against the baseline, and the guess is used as a *gate*, not believed: with its guards in place the
+  reference never leaves its start area even from the identity.
+* **The gate is given, the keep fractions are not.** `MAX_CORR = 0.5` sits in the template with the measurement
+  that chose it. One graded drive per value, everything else the reference:
+
+  | gate | 0.25 m | **0.5 m** | 1.5 m |
+  |---|---|---|---|
+  | RMSE | 1.281 m | **1.065 m** | 1.046 m |
+  | improvement | 3.11× | **3.74×** | 3.81× |
+
+  Tightening the gate costs a fifth of a metre; widening it threefold buys nothing outside the run-to-run spread.
+  A narrower gate is not a cleaner match, it is a door the correction cannot come through — and tuning it by feel
+  costs a 40-second graded run per guess, which is why the value is in the template and the hour is yours for
+  `scan_step`. The two *rejection* thresholds are deliberately left to the student (`FIT_MAX`, `KEEP_MIN` in
+  `solution/icp_odom_solution.py` carry the values that were found), because the failure mode is the lesson: ask a
+  pair to keep 55 % of its points instead of 15 % and the node throws away most of its updates — **2.57 m** on the
+  replay, **2.812 m at 1.42×** and a FAIL when graded — while the median pair of this task keeps ~48 % of its points
+  *always*, and nothing in the log says a threshold has just deleted the sensor.
+
+### E4 · why the bands have two edges
+
+The motion-model criteria are the only ones in the set that fail in both directions, deliberately: `the-cloud-spreads`
+needs 0.60 … 0.95 m of spread after one second of the same command (reference 0.75 m), where a motion model that is a
+rigid transform gives 0.00 m and one with double the noise gives 1.46 m. A one-sided band would accept a node with
+particles in it and no noise, which is dead reckoning with extra steps, and would accept a σ that is a lie in the
+other direction.
+
+* **`noise-floors-are-rates` invariance is asked of the noise floors only**, and the criterion implements exactly
+  that: 20, 10 and 40 updates of the same one second spread 0.419 / 0.423 / 0.416 m. The α terms are
+  motion-proportional and are *not* rate-invariant, and a group that generalises the requirement has misread the
+  model — say it before they build it, because the wrong version is a plausible filter on a 20 Hz bench and a bad
+  one on the robot's 5 Hz LIDAR.
+* **`uniform-on-the-floor` asks for coverage, not for a rejection test.** At 60 % wall coverage the reference lands
+  68 % of its samples on walls — that is arithmetic, not a bug — while still reaching 81 % of the free 0.5 m cells
+  (asked: 55 %) with a busiest/quietest quarter ratio of 2.8× (asked: ≤ 6×). A `if wall: resample` loop passes too,
+  and is the better code.
+* **`resample-follows-weights` asks for 95 … 105 % of the expected copy counts.** Systematic resampling is nearly
+  deterministic, so a tight band is honest: the reference returns 960 / 240 / 0 copies for modes of weight
+  0.8 / 0.2 / 0.0, and a uniform-bootstrap implementation — the same shape of function, the wrong algorithm — lands
+  near 80 % ± 2 % with the dead mode still populated, and fails.
+
+
+## E5 · the four graded tasks
 
 Four graded tasks, **130 points**, one 180-minute laboratory block, one machine per pair. Every threshold
 was measured on this checkout; [`verification.md`](verification.md) has the runs.

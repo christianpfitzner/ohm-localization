@@ -845,3 +845,74 @@ launch changes: the frame is still spelled identically in the viewer, in `/map` 
 that is a decision and not a lookup. And `/{robot}/kf/pose` stays the topic the estimate panel reads — the
 ellipse it draws is the σ the grader scores as NEES, and a second copy of the answer would be one more number
 to reconcile.
+
+## 19. The five-exercise set: the reference meets every criterion, the templates earn nothing
+
+E1 … E5 came with a mark scheme written before the measurements, which is the wrong way round. Every
+threshold in `config/exercises_localization.json` is now a number that has been met on this checkout by
+`solution/*`, and a shipped template that scores nothing on the same criteria. Reproduce with:
+
+```bash
+python3 tools/lab_check.py --check          # E1, E2, E4: reference full marks, templates 0, ~8 s
+./tools/template_check.py --record          # E5 + E3 templates and the three offline ones → student/FAILURE.md
+./tools/run_lab.sh grade --task icp_odom_production --controller solution/icp_odom_solution.py --headless
+```
+
+| exercise | points | the reference solution | the shipped template |
+|---|---|---|---|
+| E1 `e1_nn` | 20 | **20/20** — 8/8 shapes, 0.28 ms | 0/20, four criteria, all `NotImplementedError` |
+| E2 `e2_icp_pair` | 30 | **30/30** — median 7.1 mm, worst 36.0 mm | 0/30, six criteria |
+| E3 `icp_odom_production` | 30 | **PASS 30/30** — 1.065 m, 3.74× odometry, max 1.645 m, 5.7 Hz, 0 contacts | **FAIL 0/30** — 3.968 m, **1.00×**, max 7.347 m, 5.7 Hz, 0 contacts |
+| E4 `e4_particles` | 50 | **50/50** — all seven criteria | 0/50, seven criteria |
+| E5 the four MCL tasks | 130 | **130/130** (§14 and `docs/exercises.md`) | 0/130 (§14) |
+
+Six thresholds moved because of what a run said, not because of what was intended:
+
+* **E2's degeneracy criterion does not ask for a large σ.** The expectation was that a corridor fit — free to
+  slide along its own axis — would report a σ of metres along x. Measured: **σ 21 mm along the corridor, 1.2 mm
+  across it**, and a condition number of **2644** where the twelve hall pairs sit at ~9. The beam noise tilts the
+  locally fitted wall segments, and a near-null direction collects its σ from that tilt instead of from the
+  geometry (`test/test_icp.py` documents the same effect at 1.2 mm elsewhere). A criterion that asked only for a
+  large σ would grade vocabulary, so `degeneracy-is-reported` accepts an honest `cond` **or** an inflated σ, and
+  the viva asks which one the group produced.
+* **E2's robustness criterion asks 10 of 12, not 12 of 12.** From the deliberately wrong guess
+  `[0.10, 0.05, 0.03]` the reference recovers **11 of 12** pairs to within 60 mm (12 of 12 from the identity).
+  Asking for all twelve would have made the mark a coin flip on the seed.
+* **E3's anchor is worth metres.** The same matcher, publishing in the frame of the first scan instead of
+  anchoring to the first odometry pose, scored **5.26 m** on this drive against **1.07 m** anchored — the whole
+  of the difference is the robot's starting pose, ~3.5 m of it, and the library node `icp_odom_node.py` still
+  does the unanchored thing because it was written for a different question. The anchor is therefore *given*
+  code in the template, not asked for.
+* **E3's guards are measured, one constant at a time.** The gate: graded drives of the reference with everything
+  else equal give **1.281 m at 0.25 m**, **1.065 m at 0.5 m** and **1.046 m at 1.5 m** (improvement 3.11×, 3.74×,
+  3.81×) — tightening a gate costs accuracy and widening one buys nothing, so a gate is the door the correction comes
+  through, not a quality knob. The keep fraction: `KEEP_MIN = 0.55` instead of 0.15 grades **2.812 m at 1.42×** and
+  FAILs, because the median pair of this task keeps ~48 % of its points and nothing in the log mentions that a
+  threshold has just deleted most of the sensor. Both effects were found on a replay of one recording first — 1.18 m
+  at 0.25 m against 0.99 m at 0.5, and 2.57 m for the keep fraction — which is why the replay is step 4 of the sheet
+  and the graded run is what settles an argument.
+* **NEES is not a criterion in E3, and the fallback proves why.** The reference scores NEES **111.3** and the
+  wheel-step fallback **15.2** — the fallback is four metres worse and has the better NEES, because the error of
+  an *integrated* pose is bias and a per-pair σ widened by √pairs describes a fit, not an integral. NEES stays a
+  criterion in E5, where the estimate is a weighted average of hypotheses rather than an integral.
+* **E4's rate-invariance is asked of the noise floors only.** One second of the same command delivered as
+  20 × 50 ms, 10 × 100 ms and 40 × 25 ms spreads the cloud **0.419 / 0.423 / 0.416 m** (ratios 0.99 and 1.01);
+  the α terms are motion-proportional and are *not* invariant, and a criterion that claimed otherwise would fail
+  a correct motion model.
+
+Two numbers are machine-dependent and are stated as such on their sheets. E1's `measured-speed` band is 20 ms
+against a reference that takes **0.28 … 0.36 ms** here and a two-loop version that takes **52 ms** — one scan period
+at 20 Hz sits between them, which is the reason for the threshold and the reason the margin is ~60× rather than 2×.
+The middle of that range is a lesson in itself: the same correspondence written with `np.linalg.norm(..., axis=2)`
+over one 1.9 MiB temporary measures **3.1 ms**, still nine times inside the band, because the band separates
+"vectorised" from "still looping" and nothing more.
+E4's `the-cloud-spreads` band (0.60 … 0.95 m) has both edges measured: a motion model that is a rigid transform
+gives 0.00 m and one with double the noise gives **1.46 m**, so a one-sided band would accept dead reckoning with
+particles in it.
+
+All the offline numbers above are seeded (`ohm_localization.exercises.SEED`) and asserted on every commit by
+`test/test_exercises.py`; `python3 tools/lab_check.py --check` is the same assertion from the command line, and
+`tools/check.sh` runs both.
+
+**Not measured:** whether a group finishes E2 in its 85 minutes, or E4 in 180. The sheets budget the time from
+the number of functions and the number of criteria, which is a guess with a citation.

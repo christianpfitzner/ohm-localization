@@ -5,7 +5,8 @@
     "mcl_production",
     "mcl_wide",
     "mcl_budget",
-    "mcl_dirty"
+    "mcl_dirty",
+    "icp_odom_production"
   ],
   "tasks": [
     {
@@ -383,6 +384,96 @@
         "σ_z enters the weight of every beam, so it is the parameter this task is about. Everything else can stay where L1 left it.",
         "Measured on this recording, for comparison once you have your own numbers: σ_z 0.15 → 96 mm and NEES ~15; σ_z 0.30 → 62 mm; σ_z 0.50 → 49 mm and NEES 2.2; σ_z 0.80 → 62 mm. There is a minimum in there, and it is near 2·σ_sensor rather than at σ_sensor.",
         "`tools/mcl_report.py` replays a recording in seconds, so a sweep of four σ_z values is a loop, not four lab sessions."
+      ]
+    },
+    {
+      "id": "icp_odom_production",
+      "handout": false,
+      "title": "E3 — The wheels are lying: scan matching as the odometry of the robot",
+      "points": 30,
+      "experiment": 2,
+      "kind": "kf",
+      "world": "production",
+      "timeout": 90,
+      "warmup": 4.0,
+      "sensor": "odom",
+      "estimate": "kf",
+      "repeat": 1,
+      "drive": [
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": 0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        },
+        {
+          "vx": 0.0,
+          "omega": -0.5,
+          "duration": 3.2
+        },
+        {
+          "vx": 0.3,
+          "duration": 6
+        }
+      ],
+      "sim": {
+        "debug_truth": true,
+        "truth": {
+          "rate": 20.0
+        },
+        "odom": {
+          "sigma_xy": 0.01,
+          "sigma_theta": 0.006,
+          "bias_omega": 0.1,
+          "geometry": {
+            "scale_xy": 1.12
+          }
+        },
+        "lidar": {
+          "rate": 20.0
+        }
+      },
+      "icp": {
+        "mode": "line",
+        "stride": 2,
+        "sigma_z": 0.02,
+        "max_corr": 0.5,
+        "report_dt": 0.15
+      },
+      "rmse_max": 1.6,
+      "improvement_min": 2.0,
+      "max_error_max": 2.6,
+      "rate_min": 5.0,
+      "contacts_max": 0,
+      "text": "The same drive as L1, on a robot whose odometry is not to be trusted: `geometry.scale_xy = 1.12` and `bias_omega = 0.10`, which is what the wheels report after somebody fitted a different wheel and the heading reference was never recalibrated. Twelve per cent on the distance is annoying; a heading that drifts at 0.1 rad/s while the robot drives straight is what actually destroys a dead-reckoned pose. Estimate the motion from the scans alone — one registration between consecutive LIDAR scans, integrated from an anchor at the first one — and publish it on `/<robot>/kf/pose` with a σ. The improvement column is your estimate against the raw odometry of this exact drive, so it measures what the LIDAR is worth when the wheels cannot be trusted. Do not calibrate the wheels, do not fuse them in, and do not read `/truth`.",
+      "checks": [
+        "The pose comes from the scans: with the heading drifting by 0.1 rad/s the estimate does not drift with it",
+        "One registration per scan pair, and the published rate is the report rate, not the scan rate",
+        "The anchor: the pose at t = 0 is the odometry's, and the estimate is not expressed in the first scan's frame",
+        "The σ grows with the pairs integrated — a constant σ is the σ of a fit, not of a pose",
+        "No /truth, no map, no wheel fusion: `sensor: odom` is the baseline here, not an input"
+      ],
+      "hints": [
+        "`icp.relative(pose_a, pose_b)` carries points from a into b, and the robot's own increment is its inverse. Integrating the exact per-step transforms of this drive still wanders 4.9 m — check the direction before you blame the matcher.",
+        "The gate `max_corr` is a search radius, not a quality meter: at 8 m range a 1° rotation moves a point 14 cm. Measured on this drive, tightening it from 0.5 m to 0.25 m makes the result worse, 1.18 m against 0.99 m.",
+        "The per-step guess from the odometry is only 1.8 mm and 0.005 rad off, even though the accumulated odometry is metres away by the end. A wrong guess is a different problem at 50 ms than at 30 s — E2 measured the pairwise half of that sentence.",
+        "One poisoned pair held for the rest of the drive is the dominant error term. Refusing a fit is the only loop closure an odometry gets; refusing it on the fraction of surviving correspondences freezes the robot instead (both numbers are in solution/icp_odom_solution.py)."
       ]
     }
   ]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The offline half of "does this repository still do what its documentation says".
 #
-#   ./tools/check.sh              suite + task/drive check + ICP + sheet drift            (~40 s)
-#   ./tools/check.sh --live       and the four graded runs against the real grader      (~3 min)
+#   ./tools/check.sh              suite + task/drive check + ICP + sheet drift            (~1 min)
+#   ./tools/check.sh --live       and the graded runs: E3, the four MCL tasks, the template profile (~12 min)
 #   ./tools/check.sh --quick      just the test suite
 #
 # Everything except --live runs without a simulator session, so this is what to run on a laptop on a train.
@@ -42,21 +42,40 @@ step "student sheets: do docs/handout/* still say what config/tasks_localization
 # reached the printed sheet is a drift failure here rather than a cohort chasing an old target.
 run python3 tools/make_handout.py --check
 
+step "exercise sheets, issues and the README table: same drift check for the five-exercise set"
+# One JSON (config/exercises_localization.json) owns the criteria, the thresholds and the prose of E1 … E5; this
+# step is what stops a hand-edited sheet, a stale GitHub issue or a README table with an old mark in it from
+# surviving a commit.
+run python3 tools/make_lab_docs.py --check
+
+step "the offline mark scheme: reference meets every criterion, shipped template earns nothing"
+# The mark scheme is code and is checked as code. A threshold nobody has ever met, and a template that quietly
+# already contains the answer, are both silent failures of an exercise set — this is the ten-second check that
+# makes them loud. (test/test_exercises.py asserts the same pair per exercise, through the same engine.)
+run python3 tools/lab_check.py --check
+
 step "library imports without the simulator on the path at all"
 run env PYTHONPATH="$here" python3 -c 'import ohm_localization, ohm_localization.gridmap as g
 assert g.mecanum_lab_dir.__doc__, "the map layer should work with no simulator in sight"
 from ohm_localization import icp, mcl, synth; print("  (gridmap/mcl/synth/icp import clean)")'
 
 if [ "$live" = 1 ]; then
+  step "E3: scan matching as odometry, reference and shipped template, on the graded drive"
+  # One graded drive each (~40 s apiece). The two numbers the exercise set rests on are measured here: the
+  # reference's improvement over deliberately bad wheels (≥ 2× required, 3.74 measured) and the template's
+  # exactly-1.00, which is the claim that the TODO is the whole exercise.
+  run ./tools/run_lab.sh grade --task icp_odom_production --controller solution/icp_odom_solution.py --headless
+
   step "the four tasks against the simulator's own grader"
   for t in mcl_production mcl_wide mcl_budget mcl_dirty; do
     printf '\n── %s\n' "$t"
     ./tools/run_lab.sh grade --task "$t" --controller solution/mcl_node.py --headless || fail=1
   done
-  step "and the template: does the shipped student file still fail, and fail where the docs say"
-  # Four graded runs of `student/mcl_template.py`, compared against student/FAILURE.md. The point is not that
-  # it fails — a broken file fails too — it is that it fails on the *sensor model* while the plumbing (rate,
-  # contacts, no crash) still works, which is the difference between an exercise and a debugging trap.
+  step "and the templates: do the shipped student files still fail, and fail where the docs say"
+  # Four graded runs of `student/mcl_template.py` plus E3's, compared against student/FAILURE.md. The point is
+  # not that they fail — a broken file fails too — it is that they fail on the *model* while the plumbing (rate,
+  # contacts, no crash) still works, which is the difference between an exercise and a debugging trap. The three
+  # offline templates are profiled in the same pass, in seconds.
   run python3 tools/template_check.py --check
 
   step "and the package: does it build, and does the installed layout resolve?"

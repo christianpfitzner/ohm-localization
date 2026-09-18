@@ -1,0 +1,493 @@
+{
+  "schema": 1,
+  "title": "Localising a mobile robot — ICP and Monte Carlo localisation",
+  "course": "Technische Hochschule Nürnberg Georg Simon Ohm, Laboratory Practical",
+  "style_of": "One file for the four offline exercises and the two that the simulator grades: the criteria, their points and their thresholds, and the text of the task descriptions. tools/make_lab_docs.py renders the student sheets and the GitHub issue bodies out of this file and nothing else, tools/lab_check.py grades out of it, and test/test_exercises.py fails if a criterion is in one of those places and not in the others — see docs/authoring.md.",
+  "visits": [
+    {
+      "id": "I1",
+      "topic": "ICP, visit 1 of 2",
+      "minutes": 180,
+      "exercises": [
+        "e1_nn",
+        "e2_icp_pair"
+      ],
+      "goal": "Two numpy exercises at the desk: the nearest-neighbour query ICP is made of, and one model/scene pair registered with a σ the group can explain. No robot and no simulator — the whole visit is checkable with python3 tools/lab_check.py.",
+      "board": "SE(2) as a 3x3 matrix, the homogeneous transform of a point, the objective function sum_i ||T p_i - q_j(i)||^2, nearest neighbour as its inner loop, why the correspondence is recomputed every iteration."
+    },
+    {
+      "id": "I2",
+      "topic": "ICP, visit 2 of 2",
+      "minutes": 180,
+      "exercises": [
+        "e3_icp_odom"
+      ],
+      "goal": "The same matcher as the odometry of the real robot, with the wheel calibration deliberately wrong: 180 minutes on where a scan-matched pose comes from, where it stops coming from, and what the σ along a straight wall is worth.",
+      "board": "The ICP loop as a feedback loop, the correspondence gate as the basin of attraction, point-to-line versus point-to-point, why the pairwise σ is not the error of an integrated pose."
+    },
+    {
+      "id": "M1",
+      "topic": "Monte Carlo localisation, visit 1 of 2",
+      "minutes": 180,
+      "exercises": [
+        "e4_particles"
+      ],
+      "goal": "Four numpy functions that are the whole particle lifecycle — draw the prior, move the cloud, resample it, read the estimate off it — measured against criteria that a plausible-looking implementation fails.",
+      "board": "A particle as a sample from a belief, the motion model as a sampler and not a transform, the likelihood as the weight, systematic resampling, N_eff, why a filter that does not spread its cloud dies."
+    },
+    {
+      "id": "M2",
+      "topic": "Monte Carlo localisation, visit 2 of 2",
+      "minutes": 180,
+      "exercises": [
+        "e5_mcl"
+      ],
+      "goal": "The complete localiser on the robot with a wrong map prior and a GPS outage, graded by the simulator's own grader on the four tasks of config/tasks_localization.json — including whether the σ the group reports matches the error they actually make.",
+      "board": "bayes_filter.txt's predict/update/resample cycle against the six functions of mcl.py, the sensor model's four terms, the log-likelihood surface, the recovery time constant."
+    }
+  ],
+  "exercises": [
+    {
+      "id": "e1_nn",
+      "code": "E1",
+      "visit": "I1",
+      "kind": "offline",
+      "title": "The nearest neighbour inside ICP",
+      "minutes": 85,
+      "file": "student/nn_template.py",
+      "solution": "solution/nn_solution.py",
+      "run": "python3 tools/lab_check.py e1_nn",
+      "entry": "nearest_neighbour(src, dst) -> (n,) int array of indices into dst",
+      "brief": [
+        "ICP spends its entire life answering one question — for every point of one scan, which point of the other scan is nearest — and it answers it once per iteration, so registering the twelve pairs of E2 is a few million nearest-neighbour queries and nothing else. Two decisions decide whether that is usable: what you do with a beam that found nothing, and how you put the question to numpy.",
+        "The point cloud is given to you (`scan_points()`), including the rule that a beam which hit nothing is `inf` and a beam at `range_max` means \"nothing in range\", and neither of those is a point. Write `nearest_neighbour()` for `src` of shape (n, 2) and `dst` of shape (m, 2), returning the (n,) integer array of indices into `dst`. An empty `dst` is a `ValueError`, not an empty answer: a scan in which nothing echoed has no correspondences, and a matcher that registers against an empty cloud reports a pose with a covariance of zero.",
+        "Write the two-loop version first and print its time. Then write the version you would actually run and print its time. The number that goes into the protocol table is the ratio, not the smaller one: measured on the cloud of one real scan here, the same algorithm costs a third of a millisecond or fifty, depending only on how the question is put to numpy — and a matcher that is 150× too slow is not a matcher you can run at 20 Hz."
+      ],
+      "steps": [
+        "`python3 student/nn_template.py` prints a demo of two clouds and says which criteria are missing. `python3 tools/lab_check.py e1_nn --verbose` is the grader, with the numbers.",
+        "The two-loop version. Note what its answer looks like when two points are equally near — you do not have to decide, the grader accepts either — and how long it takes on the 353 × 351 cloud of one real scan: 52 ms measured, which is 20 periods of 2.6 ms each and so already too slow for one scan period on its own.",
+        "One numpy expression for the same answer: `src[:, None, :] - dst[None, :, :]` is (n, m, 2) and its norm is the whole distance matrix; `argmin` along axis 1 is the answer. Measure it.",
+        "Same arithmetic in row blocks, a few hundred rows at a time, and with the squares written out (`dx*dx + dy*dy`) instead of `np.linalg.norm(..., axis=2)`. Measure it again and be careful which of the two changes you credit: on this fixture the blocked version ran 0.36 ms against 3.1 ms for the whole-(n, m, 2) `norm` form, and with 353 source rows the block never even splits — so the speed is the arithmetic staying in cache, and the blocking is about memory and nothing else. Do that arithmetic for three sizes and put all three in the table: one scan pair (353 × 351) is 1.9 MiB and blocking is pointless there; a scan against a 40 000-point map is 216 MiB per call; 40 000 × 40 000 is 24 GiB, which is not a slow answer, it is no answer.",
+        "Optional, five minutes with scipy installed: `cKDTree(dst).query(src)`. Write down at which cloud size the tree stops being a loss."
+      ],
+      "protocol": [
+        "The milliseconds of all four implementations on the same cloud, from one `--verbose` run. The ratio of loops to broadcast, and the ratio of broadcast to KD-tree.",
+        "The shape and size of the largest intermediate array each version makes, and what it costs at 40 000 x 40 000 points.",
+        "What your code does with a beam whose range is `inf`, whose range is exactly `range_max`, and with a `dst` that is empty. One sentence each, with the line number that implements it.",
+        "The mean and median correspondence distance at the identity guess from the demo output, and which of the two is the number you would trust. Say why."
+      ],
+      "deliverables": [
+        "`nearest_neighbour()` passing all four of its criteria: `python3 tools/lab_check.py e1_nn` prints PASS.",
+        "The protocol above, and the two timings in the same units as the grader prints them."
+      ],
+      "criteria": [
+        {
+          "id": "exact-on-every-shape",
+          "points": 10,
+          "what": "Every point of `src` gets its nearest point of `dst`, on eight fixture clouds including 1×1, 1×500, 500×1, a 4×4 grid against itself where everything is an exact tie, and a real scan pair",
+          "ask": "all eight exact, the distances checked against an independent two-loop implementation",
+          "measured": "8/8; a wrong `argmin` axis, a transposed cloud or a distance returned instead of an index cannot agree with the reference"
+        },
+        {
+          "id": "self-match-is-the-identity",
+          "points": 3,
+          "what": "`nearest_neighbour(a, a)` is `arange(n)`",
+          "ask": "identity on 400 points",
+          "measured": "identity"
+        },
+        {
+          "id": "empty-target-raises",
+          "points": 3,
+          "what": "An empty `dst` raises `ValueError`",
+          "ask": "ValueError, not an empty answer and not another exception type",
+          "measured": "ValueError"
+        },
+        {
+          "id": "measured-speed",
+          "points": 4,
+          "what": "Wall-clock milliseconds on the cloud of one real scan (353 × 351 points), best of 5",
+          "ask": "at or under 20 ms",
+          "measured": "0.28 … 0.36 ms for the reference across runs on this machine (best of 5); the two-loop version takes 52 ms, the whole-(n, m, 2) `np.linalg.norm` form 3.1 ms, and the fastest thing that is still a Python loop over the rows takes 1.3 ms"
+        }
+      ],
+      "limits": {
+        "measured-speed": {
+          "ms_max": 20,
+          "repeats": 5
+        }
+      },
+      "teaches": "The inner loop of both ICP modes, and the fact that a correspondence is an index and not a distance — point-to-line ICP fits a line through the neighbours of the corresponding point, and can only do that with an index."
+    },
+    {
+      "id": "e2_icp_pair",
+      "code": "E2",
+      "visit": "I1",
+      "kind": "offline",
+      "title": "One model, one scene — and the σ that goes with them",
+      "minutes": 85,
+      "file": "student/icp_pair_template.py",
+      "solution": "solution/icp_pair_solution.py",
+      "run": "python3 tools/lab_check.py e2_icp_pair",
+      "entry": "register(model, scene, T_guess=None) -> dict(x, y, theta, sx, sy, sth)",
+      "brief": [
+        "One model scan and one scene scan of the same place, taken 1.2 m and 20 degrees apart, plus the truth of how they are related — and a matcher that returns a pose and says how sure it is. This is the exercise where the σ is the point, not the decoration: a pose without a σ is an assertion, and the viva asks where the number came from.",
+        "The convention, because it is the one-character bug that costs an hour: your answer is the transform that carries points from the frame of the **model** scan into the frame of the **scene** scan, which is `icp.relative(model_pose, scene_pose)` in that order. `ohm_localization/icp.py:relative()`'s docstring is the one-line proof, and getting it backwards scores a large error rather than an error message.",
+        "Iterate: correspondences from your E1 function, solve the weighted least-squares step, apply it, repeat until the step or the fitness stops improving. Point-to-line is the mode that survives a 20-degree start, and the library's implementation is available so that the fit is not the exercise — but write down, from your own iteration printout, what changed between iteration 0 and the last one."
+      ],
+      "steps": [
+        "Get one pair right first: `--verbose` prints the twelve pairs, their sizes and their truths. Print the fitness at the identity guess, at the truth, and at your answer, and be sure you understand the ordering before you touch a threshold.",
+        "The loop with no σ. `python3 tools/lab_check.py e2_icp_pair --verbose` tells you the median and worst error over the twelve pairs — that is the accuracy part of the mark, and it is the same quantity the paper's table is.",
+        "`sx, sy, sth` from `JᵀJ` of the last iteration: invert it, scale by the residual variance, take the square root of the diagonal. Then run the same matcher on the corridor pair the grader hands you and look at what your numbers say there: in a bare corridor the fit along it is free, and the σ is **not** where that shows up — measured here, the σ along the corridor is 21 mm while the condition number of `JᵀJ` is 2644 against 9.0 in a hall with corners. One of those two numbers is telling the truth, and the criterion asks for it by name.",
+        "Then the guess, because the robot will not hand you the identity: `T_guess` 100 mm and 2° off is the criterion, and `tools/icp_eval.py --basin` is the sweep. Measured on these twelve pairs with the reference matcher: the 100 mm guess recovers 11 of the 12 to within 60 mm, while a 250 mm one leaves nine of them under 10 mm and puts the other three at 1.91 m, 4.89 m and 5.30 m. What makes those three recoverable is in the fitness column, not the error column: at those answers the mean correspondence distance is 342 … 565 mm against 28 … 30 mm at the truth — twenty times worse, and invisible if you print the step size and nothing else. That is why the first criterion here asks your fit to be as good as the truth's rather than merely converged, and why E3 refuses a fit on exactly this number."
+      ],
+      "protocol": [
+        "Per-pair table for all twelve: points used, correspondences kept, iterations, final mean correspondence distance, error in mm and degrees, and the three σ. This table is the deliverable, and it is the same quantity the robot graded in I2 measures.",
+        "The basin sweep of `tools/icp_eval.py`: the largest translation and rotation error of `T_guess` from which the pair still converges, in point-to-point and point-to-line mode, and one sentence on what the failures 1.9 m, 4.9 m and 5.3 m away have in common with each other.",
+        "The corridor pair: your σ along it and across it, your condition number there and in the hall, and one sentence on which of the two numbers you would publish. Say why adding a prior cannot rescue a 21 mm σ — information adds, so a prior can only shrink one.",
+        "The residual histogram at the last iteration against the simulator's 20 mm beam noise, and whether your reported σ is larger or smaller than it. Both answers are defensible; no number is not."
+      ],
+      "deliverables": [
+        "`register()` passing all six of its criteria: `python3 tools/lab_check.py e2_icp_pair` prints PASS.",
+        "The per-pair table above with all twelve rows, and the corridor row separated — with the σ and the condition number filled from your own fit, not from a constant."
+      ],
+      "criteria": [
+        {
+          "id": "fits-as-well-as-the-truth",
+          "points": 4,
+          "what": "Mean correspondence distance at your answer against the mean at the truth, on every pair",
+          "ask": "never worse than 1.3× the truth's fit plus 5 mm",
+          "measured": "every pair at or under 1.00×"
+        },
+        {
+          "id": "translation-error",
+          "points": 9,
+          "what": "|error| of the returned pose against the truth, over twelve non-degenerate pairs in `production`",
+          "ask": "median ≤ 15 mm and worst ≤ 60 mm",
+          "measured": "median 7.1 mm, worst 36.0 mm"
+        },
+        {
+          "id": "heading-error",
+          "points": 5,
+          "what": "The same twelve pairs, in degrees",
+          "ask": "median ≤ 0.5° and worst ≤ 2.0°",
+          "measured": "median 0.09°, worst 0.54°"
+        },
+        {
+          "id": "sigma-not-invented",
+          "points": 3,
+          "what": "The reported σ from pair to pair: its spread divided by its mean, on both position axes",
+          "ask": "at least 0.15 on both",
+          "measured": "0.61 and 0.64, with σ running 1.6 … 9.2 mm over the twelve pairs"
+        },
+        {
+          "id": "degeneracy-is-reported",
+          "points": 5,
+          "what": "The bare-corridor pair: the condition number reported, or a σ inflated on the strength of it",
+          "ask": "cond ≥ 100, or σ along the corridor ≥ 50 mm and ≥ 3× the across σ",
+          "measured": "cond 2644 against a median of 9.0 in the hall; the σ there is 21 mm, which is the lesson and not the answer"
+        },
+        {
+          "id": "survives-a-wrong-guess",
+          "points": 4,
+          "what": "The same twelve pairs from a `T_guess` 100 mm and 2° wrong, and from the identity",
+          "ask": "at least 10 of 12 within 60 mm both times",
+          "measured": "11 of 12 and 12 of 12"
+        }
+      ],
+      "limits": {
+        "fits-as-well-as-the-truth": {
+          "fitness_ratio": 1.3,
+          "fitness_slack": 0.005
+        },
+        "translation-error": {
+          "dt_median_max": 0.015,
+          "dt_max_max": 0.06
+        },
+        "heading-error": {
+          "dth_median_max": 0.5,
+          "dth_max_max": 2.0
+        },
+        "sigma-not-invented": {
+          "cv_min": 0.15
+        },
+        "degeneracy-is-reported": {
+          "cond_min": 100,
+          "sigma_along_min": 0.05,
+          "ratio_min": 3.0
+        },
+        "survives-a-wrong-guess": {
+          "guess": [
+            0.1,
+            0.05,
+            0.03
+          ],
+          "within_max": 0.06,
+          "fraction_min": 0.8
+        }
+      },
+      "teaches": "The loop, the σ from J^T J, and the two ways a matcher lies: the constant σ, and the correspondences that were gated but still counted."
+    },
+    {
+      "id": "e3_icp_odom",
+      "code": "E3",
+      "visit": "I2",
+      "kind": "graded",
+      "title": "Scan matching as the odometry of a real robot",
+      "minutes": 180,
+      "file": "student/icp_odom_template.py",
+      "solution": "ohm_localization/icp_odom_node.py",
+      "run": "./tools/run_lab.sh grade --task icp_odom_production --controller student/icp_odom_template.py --headless",
+      "graded": {
+        "task": "icp_odom_production",
+        "task_file": "config/tasks_localization.json"
+      },
+      "brief": [
+        "The robot drives L1's course with an odometry that is not to be trusted — `odom.geometry.scale_xy = 1.12` and `odom.bias_omega = 0.10`, so every wheel tick is 12 % too long and the reported heading drifts at 0.1 rad/s while the robot drives straight. Your node has to say where it is using nothing but its own scans and one anchor. This is E2 run at 20 Hz on a machine that is moving, with the two things a desk exercise cannot hand you: a drive that integrates, and a hall that runs out of corners.",
+        "The matcher does not change and neither does its convention: `scan_step()` returns the transform that carries points from the previous scan into this one, which is `icp.relative(pose_prev, pose_scan)` in that order, and the robot's own increment is its inverse. What is new is everything around it — the anchor at t = 0, what you do with a fit you do not believe, and what a σ means when the thing it describes is an integral rather than a fit.",
+        "The miscalibration is not decoration and it is not a bug in the task: it is why the guess cannot be trusted and why the answer has to come from the scans. Do not fix the wheels, do not calibrate them, do not fuse them in. The grader's improvement column is your estimate against the raw odometry of this exact drive, and that column is the measurement this visit is about. Measured on one run of each: the odometry 3.98 m RMSE, the shipped fallback the same 3.97 m and an improvement of exactly 1.00 — because it *is* the odometry — and the reference solution 1.07 m, 3.74×."
+      ],
+      "steps": [
+        "Get the plumbing visible first: `./tools/run_lab.sh grade --task icp_odom_production --controller student/icp_odom_template.py --headless`. The shipped node passes the rate and the contact criteria and fails the three accuracy ones, with an improvement of 1.00. Read those four lines before you write anything: they are the baseline you are being asked to beat, and they are what your node does the moment it reads the wheels instead of the scans.",
+        "Write `scan_step()`. Print the fitness, the correspondence count and the condition number of the last iteration for ten consecutive pairs on the straight and ten in the turn — the same code, and the numbers are not the same, and one of the two situations will make you want to refuse a fit.",
+        "Decide what an anchor is. The reference integrates from the first odometry pose, and that choice is worth 3.5 m on this task: the library's own ICP odometry node publishes in the frame of the first scan, which is a legitimate frame and not the one `/truth` is stated in, and graded on this task it comes to 5.26 m RMSE for a matcher whose pairwise error is 7 mm. Say in the protocol which frame your pose lives in and how you know.",
+        "Then the guard, and measure it rather than invent it: record one drive (`OHM_RECORD=drive.jsonl ./tools/run_lab.sh grade --task icp_odom_production --controller tools/record_scans.py --headless`) and replay it — a parameter is then 1.5 s and not 40 s. The median pair on this drive fits to 23.8 mm and 14 of 726 do not converge; refusing a fit over 60 mm takes the drive from 1.20 m to 0.99 m.",
+        "Finally the σ. `IcpOdom.sigmas()` widens the median pairwise σ by √pairs; without any of it the number you publish is 3 mm for a pose that is a metre away. Measure your NEES in the grader's `--json` output and be ready to explain why it is ~10² even after the widening — the answer to that question is the answer to 'what is an odometry'."
+      ],
+      "protocol": [
+        "Error against drive time for one drive: your pose, the `/odom` pose and `/truth` in one plot on one axis. The shape of the curve is what to write about — yours and the wheels' should start together and come apart.",
+        "The measured improvement column with the parameters that got it, and the same run with `T_guess` replaced by the identity: on this drive the guess is 1.8 mm and 0.005 rad off per step, and saying what that changed (measured, not predicted) is worth more than a paragraph about basins.",
+        "One table of the guard's cost: RMSE of the same recorded drive with no rejection, with rejection at 60 mm, and with a `keep_min` of 0.55. The third column is the interesting one: the median pair keeps 48 % of its points *always*, so a 55 % floor throws most of the node's own updates away — measured 2.57 m on the replay and 2.812 m at 1.42× when graded, with nothing in the log to say a threshold has just deleted the sensor.",
+        "The gate sweep: 0.25 m, 0.5 m and 1.5 m on the same recording. The ordering will disagree with your intuition about what a gate is for — measured 1.18 m, 0.99 m and 0.97 m on the replay, and 1.281 m, 1.065 m and 1.046 m as three graded drives of the reference.",
+        "The four graded numbers (rmse, improvement, max error, rate) from the grader's own line, plus the NEES and the paragraph that explains its order of magnitude."
+      ],
+      "deliverables": [
+        "`icp_odom_production` PASSing, with the improvement column quoted and the parameters that got it there.",
+        "The error-against-drive-time plot, the guard table above with all three columns measured, and the NEES paragraph."
+      ],
+      "criteria": [],
+      "teaches": "ICP as a sensor instead of an algorithm: what a scan-matched pose is worth over a drive, what an anchor is worth, why the gate and the correspondence count are not quality meters, and why the σ of a fit and the error of an integral are two different kinds of number.",
+      "measured": {
+        "reference": {
+          "rmse": 1.065,
+          "improvement": 3.74,
+          "max_error": 1.645,
+          "rate_hz": 5.7,
+          "contacts": 0,
+          "nees": 111.3
+        },
+        "template": {
+          "rmse": 3.968,
+          "improvement": 1.0,
+          "max_error": 7.347,
+          "rate_hz": 5.7,
+          "contacts": 0,
+          "nees": 15.2
+        },
+        "raw_odometry_rmse": 3.984,
+        "note": "One graded drive of each at bias_omega 0.10, scale_xy 1.12, on L1's 34 s course. The template's improvement of exactly 1.00 is not a coincidence: until `scan_step()` is written the node integrates the wheel step, so it is the odometry. NEES is deliberately not a criterion here — the error of an integrated pose is bias, not noise, and the reference's 111 against the fallback's 15 is the evidence for that sentence."
+      }
+    },
+    {
+      "id": "e4_particles",
+      "code": "E4",
+      "visit": "M1",
+      "kind": "offline",
+      "title": "Generating the particles of a Monte Carlo localiser",
+      "minutes": 180,
+      "file": "student/particles_template.py",
+      "solution": "solution/particles_solution.py",
+      "run": "python3 tools/lab_check.py e4_particles",
+      "entry": "sample_uniform, sample_gaussian, move_particles, resample, weighted_estimate",
+      "brief": [
+        "A particle is not an estimate, a cloud of particles is. Five functions that between them are the entire lifecycle of a Monte Carlo localiser's hypothesis set: draw the prior, move the cloud one odometry step, weight it (that part is the sensor model, and E5 is about it), resample it, and read one pose and one σ off the cloud. Everything here is measurable without a robot, and the criteria are deliberately built so that a plausible implementation fails them.",
+        "Two of the seven criteria are about spread, and they are the two this repository earned the hard way. The reference filter was run twice with the same parameters and the same drive and came out at 0.20 m and 1.26 m of RMSE; the only difference was that one version predicted once per LIDAR scan at 20 Hz and the other once per wheel message at 50 Hz. A per-step σ means \"per message\", so the second version spread its cloud by the square root of 2.5 per second for no reason but the topic rate, and in a hall where the LIDAR says little nothing pulled it back in. The motion noise is therefore stated in two kinds: the three alphas are proportional to the motion inside the step, and the two floors are per square root of second — measured, one second of motion with the alphas off spreads the cloud 0.419 m at 20 Hz and 0.423 m at 10 Hz when the floor is a rate, and 0.202 m against 0.141 m when it is not.",
+        "The same lesson in the other direction is why a filter that does not spread dies: a cloud that cannot widen, or a σ you invent instead of measuring, is a filter that walks into a wrong pose confidently a few seconds later. The band on the spread criterion has both edges for that reason."
+      ],
+      "steps": [
+        "Draw the prior: `sample_uniform()`. The `GridMap` gives `sample_free(n, rng)`, which does it in three lines — the criterion is about what you get, not how you got it, and the two failure modes (samples in a wall, samples in one corner) are both measured. Then `sample_gaussian()`, including the case every implementation forgets: a prior at θ = 3.0 rad with σ = 0.5 has 39 % of its samples past π, and they have to come back around at −π.",
+        "`move_particles()`. With every noise field of `p` at zero the answer is a rigid transform of the cloud, and the criterion checks it to the micrometre — that is where the three usual mistakes surface: the odometry *pose* used instead of the odometry *step*, the rotation taken about the world origin instead of the robot, and one turn where the model has two.",
+        "Then the noise: three draws, `s₁` and `s₃` for the two rotations and `s₂` for the distance, each one an alpha part and a floor part, the floor multiplied by sqrt(dt). Measure the spread after 20 steps and write the number down before you look at the criterion — the number is the protocol entry, and the criterion only says whether it is in the band (the reference implementation lands at 0.75 m, which is 12 % of the distance the cloud travelled).",
+        "`resample()` with the weights the sensor model would give. The criterion hands you three modes — one carrying 80 % of the weight, one carrying 20 %, one carrying nothing — and asks for 960, 240 and 0 copies of them. A resampler that sorts and keeps the best n gives 1200, 0 and 0, which is a filter that has thrown away the second hypothesis along with the evidence for it. Systematic resampling, one uniform draw and n evenly spaced pointers, gets all three numbers and is eight lines.",
+        "`weighted_estimate()`. Average the heading as a direction, not as a number — a cloud straddling ±π means 180°, and its arithmetic mean says 0° and drives the robot backwards. The σ comes out of the spread of the cloud, because that number is what the grader scores as NEES and what RViz draws the ellipse from."
+      ],
+      "protocol": [
+        "The coverage map of `sample_uniform()`: a histogram of your samples against free area, and the count of distinct 0.5 m cells hit. One sentence on what is wrong with a cloud that fails this.",
+        "The measured σ of `sample_gaussian()` against the σ that was asked for, for three priors including the one at θ = 3.0 rad, with the number of samples that came around the wrap.",
+        "The spread of the cloud against the update rate — the same second of motion chopped into 5, 10, 20 and 40 updates — as one plot with two curves: one with the alphas on, one with only the floors on. Say which of the two curves is flat, and why that is the right shape for one and the wrong shape for the other.",
+        "One table of the resampling: the weights before, the copies after, and N_eff before and after, for the three modes of the criterion and for four equal modes.",
+        "`n` against the criteria: the smallest cloud that passes all seven of them, and the smallest that passes them with every random seed the grader uses."
+      ],
+      "deliverables": [
+        "All five functions passing all seven criteria: `python3 tools/lab_check.py e4_particles` prints PASS.",
+        "The spread-against-update-rate plot with its two curves, and the resampling table for the three modes and for four equal modes."
+      ],
+      "criteria": [
+        {
+          "id": "uniform-on-the-floor",
+          "points": 8,
+          "what": "1200 samples over the `production` map: distance to the nearest wall, and coverage of the free 0.5 m cells",
+          "ask": "no sample nearer than 150 mm to a wall, at least 55 % of the free cells hit, busiest quarter no more than 6× the quietest",
+          "measured": "closest 192 mm, 81 % of the cells hit, 2.8×"
+        },
+        {
+          "id": "gaussian-prior-with-the-asked-sigma",
+          "points": 8,
+          "what": "4000 draws around (3, 2, 3.0) with σ (0.4, 0.25, 0.5): the mean, the measured σ of the sample, and the fraction past the ±π wrap",
+          "ask": "mean within 3 standard errors, measured σ within 0.85…1.20 of the σ asked for, 28…52 % wrapped, nothing outside (−π, π]",
+          "measured": "σ (0.400, 0.247, 0.502), 39.5 % wrapped — which is what a prior at θ = 3.0 rad with σ = 0.5 really contains"
+        },
+        {
+          "id": "noiseless-motion-is-rigid",
+          "points": 4,
+          "what": "The cloud after one step with every noise field at zero, against the rigid three-part transform",
+          "ask": "worst particle within 0.1 mm and 0.01° of it",
+          "measured": "0.000 mm and 0.000°"
+        },
+        {
+          "id": "the-cloud-spreads",
+          "points": 8,
+          "what": "Position spread of 1200 particles after 20 steps of 50 ms with the filter's own parameters",
+          "ask": "inside the band 0.60…0.95 m, heading spread under 0.35 rad, mean within 150 mm of the noiseless motion",
+          "measured": "0.75 m (0.744…0.800 over twenty seeds), 0.23 rad, 71…93 mm; double the noise and it is 1.46 m, none of it and 0.000 m"
+        },
+        {
+          "id": "noise-floors-are-rates",
+          "points": 6,
+          "what": "One second of the same motion as 20 × 50 ms, 10 × 100 ms and 40 × 25 ms, with the alphas off and only the floors on",
+          "ask": "both spread ratios within 0.85…1.18",
+          "measured": "0.419 m, 0.423 m and 0.416 m — ratios 0.99 and 1.01; the same test on a per-step σ gives 0.202 m and 0.141 m, ratio 1.43"
+        },
+        {
+          "id": "resample-follows-weights",
+          "points": 8,
+          "what": "Three modes carrying 80 %, 20 % and nothing: copies of each after resampling, and the mean of the result",
+          "ask": "copies within ±5 % of 0.8n and 0.2n, none of the zero-weight mode, mean within 10 mm of 8.0 m, still n particles",
+          "measured": "960 and 240 exactly, 0 dead survivors, mean 8.000 m"
+        },
+        {
+          "id": "estimate-averages-headings",
+          "points": 8,
+          "what": "A cloud of poses straddling ±π, and a cloud of known spread: the estimate's heading and its σ",
+          "ask": "heading at least 2.9 rad out of ±π, position within 10 mm, σ within 20 mm of the cloud's own",
+          "measured": "3.14 rad, σ (0.198, 0.101)"
+        }
+      ],
+      "limits": {
+        "uniform-on-the-floor": {
+          "n": 1200,
+          "min_clearance": 0.15,
+          "cover_min": 0.55,
+          "block_ratio_max": 6.0
+        },
+        "gaussian-prior-with-the-asked-sigma": {
+          "n": 4000,
+          "center": [
+            3.0,
+            2.0,
+            3.0
+          ],
+          "sigma": [
+            0.4,
+            0.25,
+            0.5
+          ],
+          "std_band": [
+            0.85,
+            1.2
+          ],
+          "wrap_band": [
+            0.28,
+            0.52
+          ]
+        },
+        "noiseless-motion-is-rigid": {
+          "noiseless_max": 0.0001
+        },
+        "the-cloud-spreads": {
+          "steps": 20,
+          "spread_band": [
+            0.6,
+            0.95
+          ],
+          "dth_max": 0.35,
+          "mean_max": 0.15
+        },
+        "noise-floors-are-rates": {
+          "steps_a": 20,
+          "steps_b": 10,
+          "steps_c": 40,
+          "ratio_band": [
+            0.85,
+            1.18
+          ],
+          "min_spread": 0.01
+        },
+        "resample-follows-weights": {
+          "n": 1200,
+          "per_mode": 400,
+          "weight_a": 0.2,
+          "weight_b": 0.8,
+          "copy_band": [
+            0.95,
+            1.05
+          ],
+          "mean_max": 0.01
+        },
+        "estimate-averages-headings": {
+          "wrap_heading_min": 2.9,
+          "sigma_tol": 0.02
+        }
+      },
+      "teaches": "The sampling half of the filter, and the one parameter that decides whether a localiser survives a degenerate hall: how fast the cloud is allowed to widen."
+    },
+    {
+      "id": "e5_mcl",
+      "code": "E5",
+      "visit": "M2",
+      "kind": "graded",
+      "title": "The complete localiser on the robot",
+      "minutes": 180,
+      "file": "student/mcl_template.py",
+      "solution": "solution/mcl_node.py",
+      "run": "./tools/run_lab.sh grade --task mcl_production,mcl_wide,mcl_budget,mcl_dirty --controller student/mcl_template.py --headless",
+      "graded": {
+        "task": "mcl_production,mcl_wide,mcl_budget,mcl_dirty",
+        "task_file": "config/tasks_localization.json"
+      },
+      "brief": [
+        "The filter, on the robot, in four graded drives: localise from a 0.5 m prior; the same drive from a 2 m prior, where the true pose starts out surrounded by a thousand wrong neighbours; the same accuracy on a quarter of the particles and every beam; and the same hall with a dirty LIDAR window, where the model has to be told what the sensor actually measures. One function is missing from the template — the sensor model — and it is the one that decides which hypothesis the weights prefer.",
+        "The tasks are graded by the simulator's own grader, the same program that produced the numbers in `docs/exercises.md`, and the shipped template fails all four — on accuracy everywhere, and on NEES in the dirty-LIDAR task. NEES is the mean normalised squared error: the squared error divided by the variance you claimed, averaged over the drive, and 1.0 means the σ you published is the error you make. It is the only criterion in this laboratory that grades the honesty of a number rather than its size, and it is what the two-minute viva conversation is about.",
+        "The σ you report comes out of the particles, so it is the spread of the cloud and nothing else. Do not widen it to pass the band: `student/FAILURE.md` measures what the shipped template does — an estimate 0.68 m out behind a σ wide enough to score a NEES of **0.12**, which misses L4's band [0.3, 5] **from below**. A ratio can be satisfied from the wrong side, and widening a σ until the number falls into the band is the same trick with more steps."
+      ],
+      "steps": [
+        "`./tools/run_lab.sh sim` first and drive the L1 course by hand while the estimate is on the screen, so the thing you are grading is visible before you touch a parameter.",
+        "`TODO(L1)`, the beam model: log-likelihood per beam, the four mixture terms, the beam stride and α in the sheet's ranges. `./tools/run_lab.sh grade` from the first minute, because the failure trace tells you which of the four terms is wrong and there is no other way to find out.",
+        "The parameters that the sheet asks you to sweep, one at a time, with the measured outcome written into the protocol table as you go. The two that matter most in a hall with few landmarks are the mixture α and the motion noise rate, and the reason is the same reason as in E4's spread criterion.",
+        "L4 is a map that is wrong by one wall. Watch the estimate there and be ready to explain what you see: the robot knows where it is and the map disagrees, and the shape of the resulting particle cloud is the answer to the viva's last question."
+      ],
+      "protocol": [
+        "The four graded tasks: the grader's own table — RMSE, improvement, maximum error, NEES, rate, contacts — with your parameter values next to it. This is the deliverable; it is generated by `./tools/run_lab.sh grade`, not written out.",
+        "L1 with 30, 100, 300, 1000 and 3000 particles and α at 0.01, 0.05 and 0.15, as a table of RMSE and NEES: the cost curve of a filter, and where the recovery time constant stops improving.",
+        "L3's 10 s outage as two curves against drive time: the GPS error and your error. The point where they cross is the sentence to write.",
+        "L4: a map of the map's error and a plot of your particle cloud at the moment of maximum disagreement — three frames, with the cloud's shape described in words.",
+        "The σ against the actual error over one drive, as one plot with both curves, and the mean of the squared ratio. That is the NEES in the handout, and it has to be your number."
+      ],
+      "deliverables": [
+        "All four tasks PASSing, one `./tools/run_lab.sh grade` line each, with the parameter values that got them there.",
+        "The NEES plot and the paragraph about it: which of the σ's two jobs (the estimator's and the confidence interval's) your filter does better, and what you changed to find out."
+      ],
+      "criteria": [],
+      "teaches": "The complete filter and the meaning of its output: an estimate is a pose and a σ, and a grade that looks only at the pose grades half of it.",
+      "measured": {
+        "solution": {
+          "L1": "15 mm rmse, 12.5× the odometry, NEES 0.19 — 30/30",
+          "L2": "15 mm, 12.6×, max error 37 mm — 35/35",
+          "L3": "17 mm, 26.4×, NEES 0.27 at 250 particles and every beam — 35/35",
+          "L4": "35 mm, 5.4×, NEES 1.66 with σ_lidar = 250 mm — 30/30"
+        },
+        "template": "0.68 m on L1 at 0.27× the odometry, 1.25 m on L3, and a NEES of 0.12 that misses L4's band from below; fails all four, on the sensor model and not on the plumbing",
+        "note": "The whole table, with the sweeps behind each row, is `docs/exercises.md`; the runs are `docs/verification.md`. Reproduce them with ./tools/check.sh --live."
+      }
+    }
+  ]
+}
